@@ -1,0 +1,29 @@
+version: "3.8"
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: yourpassword
+      POSTGRES_DB: docfusiondb
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  app:
+    image: arrowpeak/docfusiondb:mvp
+    depends_on:
+      - db
+    # override the default ENTRYPOINT to run the CLI;
+    # e.g. start a REPL or your own command
+    command: ["query", "SELECT count(*) FROM documents"]
+    environment:
+      # if your code picks up DATABASE_URL instead of hardcoding
+      DATABASE_URL: postgres://postgres:yourpassword@db:5432/docfusiondb
+    # expose ports if you add a server later
+    # ports:
+    #   - "8080:8080"
+
+volumes:
+  db_data:
