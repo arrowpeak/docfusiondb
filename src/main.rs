@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use datafusion::catalog::Session;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::SessionContext;
+use datafusion::logical_expr::{Expr, Operator};
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
     Statistics, Partitioning,
@@ -11,13 +12,72 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::datatypes::{Field, DataType, Schema};
-use datafusion::logical_expr::Expr;
+use datafusion::scalar::ScalarValue;
 use datafusion::physical_expr::EquivalenceProperties;
 use futures::stream::{self};
 use std::sync::Arc;
 use tokio_postgres::{Client, NoTls};
 
-/// Define a struct to represent our Postgres table.
+/// Convert a DataFusion expression to a SQL snippet.
+///
+/// This simplified translator supports:
+/// - BinaryExpr where the operator is equality (Operator::Eq) or logical AND (Operator::And).
+/// - Column references and literal values.
+///
+/// For a JSONB filter, it expects JSONB columns to be referenced with a prefix of "doc.",
+/// e.g. a column reference "doc.status" is converted into "doc->>'status'".
+fn expr_to_sql(expr: &Expr) -> Option<String> {
+    match expr {
+        // Use tuple pattern to destructure BinaryExpr.
+        Expr::BinaryExpr(binary_expr) => {
+            let left = &binary_expr.left;
+            let op = &binary_expr.op;
+            let right = &binary_expr.right;
+            if *op == Operator::Eq {
+                let left_sql = expr_to_sql(left)?;
+                let right_sql = expr_to_sql(right)?;
+                // Check if left is a JSONB column represented as "doc.field"
+                if left_sql.starts_with("doc.") {
+                    let field = left_sql.strip_prefix("doc.").unwrap();
+                    Some(format!("doc->>'{}' = {}", field, right_sql))
+                } else {
+                    Some(format!("{} = {}", left_sql, right_sql))
+                }
+            } else if *op == Operator::And {
+                let left_sql = expr_to_sql(left)?;
+                let right_sql = expr_to_sql(right)?;
+                Some(format!("({} AND {})", left_sql, right_sql))
+            } else {
+                None
+            }
+        },
+        // For column references, just return the column name.
+        Expr::Column(col) => Some(col.name.clone()),
+        // For literals, if it's a Utf8 string, add quotes.
+        Expr::Literal(scalar) => match scalar {
+            ScalarValue::Utf8(Some(s)) => Some(format!("'{}'", s)),
+            _ => Some(scalar.to_string()),
+        },
+        _ => None,
+    }
+}
+
+/// Combine multiple filter expressions into a single SQL WHERE clause.
+fn filters_to_sql(filters: &[Expr]) -> Option<String> {
+    let mut conditions = Vec::new();
+    for expr in filters {
+        if let Some(cond) = expr_to_sql(expr) {
+            conditions.push(cond);
+        }
+    }
+    if conditions.is_empty() {
+        None
+    } else {
+        Some(format!(" WHERE {}", conditions.join(" AND ")))
+    }
+}
+
+/// Define a struct representing our Postgres table.
 #[derive(Debug)]
 struct PostgresTable {
     client: Client,
@@ -80,7 +140,6 @@ impl ExecutionPlan for SimpleExec {
     fn schema(&self) -> Arc<Schema> {
         self.schema.clone()
     }
-    // No children for this simple plan.
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
     }
@@ -128,7 +187,6 @@ impl TableProvider for PostgresTable {
     fn table_type(&self) -> TableType {
         TableType::Base
     }
-    // Updated scan method: Integrate simple filtering to trigger GIN index usage.
     async fn scan(
         &self,
         _state: &dyn Session,
@@ -136,27 +194,17 @@ impl TableProvider for PostgresTable {
         filters: &[Expr],
         _limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        // Build a filter clause based on provided filters.
-        let filter_clause = if !filters.is_empty() {
-            // For demonstration, we assume the first filter can be translated to a SQL condition.
-            // In a real implementation, traverse the filters and generate appropriate SQL.
-            // For example: Assume a simple equality: doc->>'status' = 'active'
-            " WHERE doc->>'status' = 'active'"
-        } else {
-            ""
-        };
-        // Construct the SQL query that leverages the JSONB column and its GIN index.
+        // Translate filter expressions into a SQL WHERE clause.
+        let filter_clause = filters_to_sql(filters).unwrap_or_default();
+        // Construct the SQL query.
         let query = format!("SELECT id, doc::text FROM documents{}", filter_clause);
         println!("Executing query: {}", query);
-
-        // Execute the query.
         let rows = self
             .client
             .query(&query, &[])
             .await
             .map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
-
-        // Build Arrow arrays from the returned rows.
+        // Build Arrow arrays.
         let mut id_builder = datafusion::arrow::array::Int32Builder::new();
         let mut doc_builder = datafusion::arrow::array::StringBuilder::new();
         for row in rows {
@@ -167,7 +215,6 @@ impl TableProvider for PostgresTable {
             as Arc<dyn datafusion::arrow::array::Array>;
         let doc_array = Arc::new(doc_builder.finish())
             as Arc<dyn datafusion::arrow::array::Array>;
-
         // Use the full schema.
         let full_schema = self.schema();
         let batch = RecordBatch::try_new(full_schema.clone(), vec![id_array, doc_array])?;
@@ -187,14 +234,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let table_provider: Arc<dyn TableProvider> = Arc::new(table);
     // Register the table with DataFusion.
     ctx.register_table("documents", table_provider)?;
-    // Execute a simple query: SELECT doc FROM documents.
-    let df = ctx.sql("SELECT doc FROM documents").await?;
+    // Execute a query with a filter.
+    // For instance, this query is expected to match JSONB documents where doc->>'status' equals 'active'.
+    let df = ctx.sql("SELECT doc FROM documents WHERE doc->>'status' = 'active'").await?;
     let results = df.collect().await?;
     for batch in results {
         println!("Batch: {:?}", batch);
     }
     let start = std::time::Instant::now();
-    let df = ctx.sql("SELECT doc FROM documents").await?;
+    let df = ctx.sql("SELECT doc FROM documents WHERE doc->>'status' = 'active'").await?;
     df.collect().await?;
     let duration = start.elapsed();
     println!("Query took: {:?}", duration);
