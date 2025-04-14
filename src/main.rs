@@ -11,6 +11,7 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::datatypes::{Field, DataType, Schema};
+use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::EquivalenceProperties;
 use futures::stream::{self};
 use std::sync::Arc;
@@ -60,7 +61,7 @@ impl SimpleExec {
     }
 }
 
-/// Implement DisplayAs for SimpleExec to satisfy the ExecutionPlan trait.
+/// Implement DisplayAs for SimpleExec.
 impl DisplayAs for SimpleExec {
     fn fmt_as(
         &self,
@@ -79,7 +80,7 @@ impl ExecutionPlan for SimpleExec {
     fn schema(&self) -> Arc<Schema> {
         self.schema.clone()
     }
-    // Return no children.
+    // No children for this simple plan.
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
     }
@@ -94,7 +95,6 @@ impl ExecutionPlan for SimpleExec {
         _partition: usize,
         _context: Arc<datafusion::execution::TaskContext>,
     ) -> datafusion::error::Result<SendableRecordBatchStream> {
-        // Convert the vector of RecordBatches into an async stream.
         let stream = stream::iter(self.batches.clone().into_iter().map(Ok));
         Ok(Box::pin(RecordBatchStreamAdapter::new(self.schema.clone(), stream)))
     }
@@ -104,11 +104,9 @@ impl ExecutionPlan for SimpleExec {
     fn statistics(&self) -> datafusion::error::Result<Statistics> {
         Ok(Statistics::new_unknown(&self.schema()))
     }
-    // Provide a fixed name.
     fn name(&self) -> &str {
         "SimpleExec"
     }
-    // Return the computed plan properties.
     fn properties(&self) -> &PlanProperties {
         &self.properties
     }
@@ -130,21 +128,35 @@ impl TableProvider for PostgresTable {
     fn table_type(&self) -> TableType {
         TableType::Base
     }
-    // For simplicity, ignore the projection parameter and always produce full schema data.
+    // Updated scan method: Integrate simple filtering to trigger GIN index usage.
     async fn scan(
         &self,
         _state: &dyn Session,
         _projection: Option<&Vec<usize>>,
-        _filters: &[datafusion::logical_expr::Expr],
+        filters: &[Expr],
         _limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        // Query Postgres for the data.
+        // Build a filter clause based on provided filters.
+        let filter_clause = if !filters.is_empty() {
+            // For demonstration, we assume the first filter can be translated to a SQL condition.
+            // In a real implementation, traverse the filters and generate appropriate SQL.
+            // For example: Assume a simple equality: doc->>'status' = 'active'
+            " WHERE doc->>'status' = 'active'"
+        } else {
+            ""
+        };
+        // Construct the SQL query that leverages the JSONB column and its GIN index.
+        let query = format!("SELECT id, doc::text FROM documents{}", filter_clause);
+        println!("Executing query: {}", query);
+
+        // Execute the query.
         let rows = self
             .client
-            .query("SELECT id, doc::text FROM documents", &[])
+            .query(&query, &[])
             .await
             .map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
-        // Build Arrow arrays.
+
+        // Build Arrow arrays from the returned rows.
         let mut id_builder = datafusion::arrow::array::Int32Builder::new();
         let mut doc_builder = datafusion::arrow::array::StringBuilder::new();
         for row in rows {
@@ -155,10 +167,10 @@ impl TableProvider for PostgresTable {
             as Arc<dyn datafusion::arrow::array::Array>;
         let doc_array = Arc::new(doc_builder.finish())
             as Arc<dyn datafusion::arrow::array::Array>;
+
         // Use the full schema.
         let full_schema = self.schema();
         let batch = RecordBatch::try_new(full_schema.clone(), vec![id_array, doc_array])?;
-        // Create our physical plan using the full schema.
         let exec = SimpleExec::new(vec![batch], full_schema);
         Ok(Arc::new(exec))
     }
@@ -178,11 +190,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Execute a simple query: SELECT doc FROM documents.
     let df = ctx.sql("SELECT doc FROM documents").await?;
     let results = df.collect().await?;
-    // Print the results.
     for batch in results {
         println!("Batch: {:?}", batch);
     }
-    // Measure query performance.
     let start = std::time::Instant::now();
     let df = ctx.sql("SELECT doc FROM documents").await?;
     df.collect().await?;
