@@ -1,0 +1,63 @@
+name: Auto Release and Tag
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  release:
+    name: Create Release Tag and GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Action"
+          git config user.email "action@github.com"
+
+      - name: Bump version and create tag
+        id: bump
+        run: |
+          # Extract current version from Cargo.toml. Assumes it's on a line like: version = "x.y.z"
+          CURRENT_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "Current version: $CURRENT_VERSION"
+          
+          # Split version into its parts (major, minor, patch)
+          IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+          # Bump patch version (you can change this strategy as needed)
+          NEW_PATCH=$((patch + 1))
+          NEW_VERSION="$major.$minor.$NEW_PATCH"
+          echo "New version: $NEW_VERSION"
+          
+          # Replace the version in Cargo.toml
+          sed -i "s/version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" Cargo.toml
+          
+          # Commit the change and create a new tag.
+          git add Cargo.toml
+          git commit -m "Bump version to $NEW_VERSION [skip ci]"
+          git tag -a "$NEW_VERSION" -m "Release version $NEW_VERSION"
+
+          echo "::set-output name=new_version::$NEW_VERSION"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push changes and tag
+        run: |
+          git push origin HEAD
+          git push origin --tags
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.bump.outputs.new_version }}
+          release_name: "Release ${{ steps.bump.outputs.new_version }}"
+          body: |
+            Automatically generated release from CI/CD pipeline.
+          draft: false
+          prerelease: false
