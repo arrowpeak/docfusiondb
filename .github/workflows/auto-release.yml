@@ -1,5 +1,9 @@
 name: Auto Release and Tag
 
+# Grant the workflow write permissions to contents.
+permissions:
+  contents: write
+
 on:
   push:
     branches: [ main ]
@@ -20,13 +24,13 @@ jobs:
       - name: Bump version and create tag
         id: bump
         run: |
-          # Extract current version from Cargo.toml. Assumes it's on a line like: version = "x.y.z"
+          # Extract current version from Cargo.toml (assumes a line like: version = "x.y.z")
           CURRENT_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           echo "Current version: $CURRENT_VERSION"
           
           # Split version into its parts (major, minor, patch)
           IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
-          # Bump patch version (you can change this strategy as needed)
+          # Bump patch version (customize as needed for your workflow)
           NEW_PATCH=$((patch + 1))
           NEW_VERSION="$major.$minor.$NEW_PATCH"
           echo "New version: $NEW_VERSION"
@@ -38,7 +42,7 @@ jobs:
           git add Cargo.toml
           git commit -m "Bump version to $NEW_VERSION [skip ci]"
           git tag -a "$NEW_VERSION" -m "Release version $NEW_VERSION"
-
+          
           echo "::set-output name=new_version::$NEW_VERSION"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
