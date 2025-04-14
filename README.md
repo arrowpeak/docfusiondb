@@ -1,78 +1,200 @@
 # DocFusionDB
 
-Welcome to **DocFusionDB**, an open-source project to build a high-performance document database using DataFusion and Postgres. We’re creating a system that leverages Postgres’ JSONB for document storage and DataFusion’s vectorized query engine for blazing-fast performance, targeting use cases like content management and real-time analytics.
+DocFusionDB is an experimental document database built in Rust that combines Postgres’ high‑performance JSONB storage and indexing with Apache Arrow’s [DataFusion](https://arrow.apache.org/datafusion/) query engine. By using custom User-Defined Functions (UDFs) to push down JSON filtering to Postgres, DocFusionDB can deliver fast query performance while preserving document flexibility.
 
-We’re in the early stages of development, so this is the perfect time to get involved! 🎉
+---
 
-## 🌟 What is DocFusionDB?
+## Table of Contents
 
-DocFusionDB aims to:
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Getting Started](#getting-started)
+  - [Building and Running Locally](#building-and-running-locally)
+  - [Using Docker Compose](#using-docker-compose)
+- [Example CLI Commands](#example-cli-commands)
+- [Architecture Overview](#architecture-overview)
+- [API Reference](#api-reference)
+- [Tutorial / Demo App](#tutorial--demo-app)
+- [Contributing](#contributing)
+- [License](#license)
 
-- Store documents efficiently using Postgres’ JSONB.
-- Query them at high speed with DataFusion’s Rust-based engine.
-- Support hybrid workloads (documents + analytics) with a single SQL interface.
+---
 
-Think of it as a bridge between relational and NoSQL worlds, combining the best of both.
+## Features
 
-## 🚀 Getting Started
+- **JSONB Document Storage**: Store rich JSON documents in Postgres.
+- **Push-Down Querying**: Custom DataFusion UDFs to transform SQL expressions (like `json_extract_path`, `json_contains`, and `json_multi_contains`) into SQL that Postgres can optimize with its GIN indexes.
+- **Flexible CLI**: A command-line interface for inserting, querying, and updating documents.
+- **Dockerized MVP**: Ready to deploy via Docker Compose.
 
-We’re still building the foundation, but you can set up a local environment to explore the prototype:
+---
 
-### Prerequisites
+## Prerequisites
 
-- [Rust](https://www.rust-lang.org/tools/install) (latest stable)
-- [Postgres](https://www.postgresql.org/download/) (v15 or later)
-- [Docker](https://www.docker.com/get-started/) (optional, for easy setup)
+- **Docker & Docker Compose**: To run the system in a containerized environment.
+- **Rust & Cargo**: For local development (optional if using the Docker image).
+- **PostgreSQL 15+**: Used as the storage backend.
 
-### Setup
+---
 
-1. Clone the repo:
+## Getting Started
+
+### Building and Running Locally
+
+1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/arrowpeak/docfusiondb.git
+   git clone https://github.com/youruser/docfusiondb.git
    cd docfusiondb
    ```
 
-2. Start a Postgres instance (or use Docker):
+2. **Build the project using Cargo:**
 
    ```bash
-   docker run -d --name docfusiondb-postgres -p 5432:5432 -e POSTGRES_PASSWORD=yourpassword postgres:15
+   cargo build --release
    ```
 
-3. Build the project:
+3. **Run the CLI (for example, to show help):**
 
    ```bash
-   cargo build
+   cargo run -- --help
    ```
 
-4. Run the prototype (queries a sample JSONB table):
+### Using Docker Compose
 
-   ```bash
-   cargo run --bin docfusiondb
-   ```
+A sample `docker-compose.yml` is provided. Ensure it is in the repo root.
 
-## 🛠️ Contributing
+Start the services:
 
-We’re just starting out and would love your help! Here’s how you can contribute:
+```bash
+docker-compose up -d
+```
 
-- Check out our issues for tasks (e.g., JSONB query improvements, docs).
-- Submit ideas or bug reports via issues.
-- Fork the repo, make changes, and open a pull request—we’ll review within 48 hours.
+This will start a PostgreSQL container and the DocFusionDB app container.
 
-New to Rust or DataFusion? No worries! We’ll support you every step of the way.
+Run CLI commands in the container:
 
-## 📜 Roadmap
+For example, to query the database:
 
-- **Phase 1 (0–6 months):** Build a basic JSONB query engine with DataFusion + Postgres.
-- **Phase 2:** Optimize performance and add analytics features.
-- **Phase 3:** Support advanced use cases like vector search and distributed setups.
+```bash
+docker-compose exec app docfusiondb query "SELECT json_extract_path(doc, 'title') AS title FROM documents"
+```
 
-See our full roadmap (`docs/roadmap.md`) for details (coming soon!).
+Set Environment Variables:
 
-## 📬 Get in Touch
+The app uses the environment variable `DATABASE_URL` to connect to PostgreSQL. In your `docker-compose.yml`, ensure it’s set, e.g.:
 
-- Join the conversation on Apache Arrow Slack in the `#docfusiondb` channel.
-- Follow us on Twitter: [@DocFusionDB](https://twitter.com/DocFusionDB).
-- Email: hello@docfusiondb.com (coming soon).
+```yaml
+environment:
+  DATABASE_URL: "postgres://postgres:yourpassword@db:5432/docfusiondb"
+```
 
-Let’s build the future of document databases together! 💡
+---
+
+## Example CLI Commands
+
+### Insert a Document
+
+```bash
+docfusiondb insert '{"title":"Hello","body":"World","tags":["example","test"]}'
+```
+
+Inserts a new document into the `documents` table.
+
+### Query Documents
+
+```bash
+docfusiondb query "SELECT json_extract_path(doc, 'status') AS status, json_extract_path(doc, 'title') AS title FROM documents WHERE json_extract_path(doc, 'status') = 'active'"
+```
+
+Retrieves all documents where the `status` field equals `"active"`, using the UDF to extract fields from your JSONB.
+
+### Update a Document
+
+```bash
+docfusiondb update 42 '{"status":"complete","title":"Updated Title","body":"New content"}'
+```
+
+Updates the document with ID 42.
+
+---
+
+## Architecture Overview
+
+DocFusionDB’s architecture combines two powerful systems:
+
+### Overview
+
+**DataFusion Query Engine**  
+Acts as the query planner and optimizer. It converts SQL queries into an execution plan. Custom UDFs (such as `json_extract_path`, `json_contains`, and `json_multi_contains`) transform JSON-related expressions into SQL that PostgreSQL can understand.
+
+**Postgres Storage Layer**  
+Utilizes Postgres’ native JSONB support and its fast GIN indexing for document storage and efficient query execution.
+
+### Data Flow Diagram (Conceptual)
+
+```pgsql
++----------------------+        +--------------------+        +------------------------+
+|   CLI / API Input    | -----> | DataFusion Query   | -----> |   Postgres Database    |
+| (SQL + UDF functions)|        | Planner & Executor |        | (JSONB storage, GIN    |
+|                      |        | (translates UDFs   |        |  indexes for pushdown) |
+|                      |        |  via expr_to_sql)  |        |                        |
++----------------------+        +--------------------+        +------------------------+
+```
+
+### UDF Processing:
+
+Custom UDFs let you write SQL like:
+
+```sql
+SELECT json_extract_path(doc, 'status') 
+FROM documents 
+WHERE json_extract_path(doc,'status') = 'active'
+```
+
+This is translated internally into a SQL query that Postgres can optimize using its native JSONB support.
+
+---
+
+## API Reference
+
+### CLI Commands
+
+| Command | Description | Usage Example |
+|---------|-------------|----------------|
+| `query` | Execute a SQL query against the `documents` table | `docfusiondb query "SELECT json_extract_path(doc,'title') FROM documents"` |
+| `insert` | Insert a new document (JSON string) into `documents` | `docfusiondb insert '{"title":"Hello","body":"World"}'` |
+| `update` | Update an existing document by specifying its ID and new JSON | `docfusiondb update 42 '{"status":"complete"}'` |
+
+### UDF Functions Available in SQL
+
+- `json_extract_path(doc, 'field')`  
+  Extracts the value associated with `'field'` from the JSON document in `doc`.
+
+- `json_contains(doc, '{"field": "value"}')`  
+  Returns true if the JSON in `doc` contains the key-value pair.
+
+- `json_multi_contains(doc, '{"field1": "value1", "field2": "value2"}')`  
+  Performs a multi‑key containment check in a single operation.
+
+---
+
+## Tutorial / Demo App
+
+Coming soon
+
+## Contributing
+
+We welcome contributions! Some ideas for “good first issues” include:
+
+- Improving CLI documentation (e.g. add more examples in the README).
+- Writing integration tests with a real Postgres container.
+- Creating a sample dataset loader script.
+
+Please see `CONTRIBUTING.md` for guidelines.
+
+---
+
+## License
+
+This project is licensed under the MIT License. See `LICENSE` for details.
