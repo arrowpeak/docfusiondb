@@ -1,200 +1,214 @@
 # DocFusionDB
 
-DocFusionDB is an experimental document database built in Rust that combines Postgres’ high‑performance JSONB storage and indexing with Apache Arrow’s [DataFusion](https://arrow.apache.org/datafusion/) query engine. By using custom User-Defined Functions (UDFs) to push down JSON filtering to Postgres, DocFusionDB can deliver fast query performance while preserving document flexibility.
+DocFusionDB is an experimental document database built in Rust that combines PostgreSQL's high‑performance JSONB storage with Apache Arrow's [DataFusion](https://arrow.apache.org/datafusion/) query engine. By using custom User-Defined Functions (UDFs), DocFusionDB enables fast SQL queries over JSON documents while maintaining flexibility.
 
----
+## ✨ Features
 
-## Table of Contents
+- **🚀 HTTP API**: RESTful API for document operations and custom queries
+- **📊 JSONB Document Storage**: Store rich JSON documents in PostgreSQL with GIN indexing
+- **⚡ DataFusion Integration**: Fast SQL queries with custom JSON UDFs
+- **🔌 Connection Pooling**: Production-ready database connection management  
+- **📝 Structured Logging**: JSON logging with performance metrics
+- **🧪 CLI Interface**: Command-line tools for development and testing
+- **⚙️ Flexible Configuration**: YAML config with environment variable support
 
-- [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Getting Started](#getting-started)
-  - [Building and Running Locally](#building-and-running-locally)
-  - [Using Docker Compose](#using-docker-compose)
-- [Example CLI Commands](#example-cli-commands)
-- [Architecture Overview](#architecture-overview)
-- [API Reference](#api-reference)
-- [Tutorial / Demo App](#tutorial--demo-app)
-- [Contributing](#contributing)
-- [License](#license)
+## 🚀 Quick Start
 
----
+### Prerequisites
 
-## Features
+- **PostgreSQL 15+**: As the storage backend
+- **Rust & Cargo**: For building from source
 
-- **JSONB Document Storage**: Store rich JSON documents in Postgres.
-- **Push-Down Querying**: Custom DataFusion UDFs to transform SQL expressions (like `json_extract_path`, `json_contains`, and `json_multi_contains`) into SQL that Postgres can optimize with its GIN indexes.
-- **Flexible CLI**: A command-line interface for inserting, querying, and updating documents.
-- **Dockerized MVP**: Ready to deploy via Docker Compose.
-
----
-
-## Prerequisites
-
-- **Docker & Docker Compose**: To run the system in a containerized environment.
-- **Rust & Cargo**: For local development (optional if using the Docker image).
-- **PostgreSQL 15+**: Used as the storage backend.
-
----
-
-## Getting Started
-
-### Building and Running Locally
-
-1. **Clone the repository:**
-
-   ```bash
-   git clone https://github.com/youruser/docfusiondb.git
-   cd docfusiondb
-   ```
-
-2. **Build the project using Cargo:**
-
-   ```bash
-   cargo build --release
-   ```
-
-3. **Run the CLI (for example, to show help):**
-
-   ```bash
-   cargo run -- --help
-   ```
-
-### Using Docker Compose
-
-A sample `docker-compose.yml` is provided. Ensure it is in the repo root.
-
-Start the services:
+### 1. Set up PostgreSQL
 
 ```bash
-docker-compose up -d
+# Create database and table
+createdb docfusiondb
+psql docfusiondb -c "
+CREATE TABLE IF NOT EXISTS documents (
+    id SERIAL PRIMARY KEY,
+    doc JSONB NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_documents_gin ON documents USING GIN (doc);
+"
 ```
 
-This will start a PostgreSQL container and the DocFusionDB app container.
+### 2. Configure Connection
 
-Run CLI commands in the container:
-
-For example, to query the database:
-
-```bash
-docker-compose exec app docfusiondb query "SELECT json_extract_path(doc, 'title') AS title FROM documents"
-```
-
-Set Environment Variables:
-
-The app uses the environment variable `DATABASE_URL` to connect to PostgreSQL. In your `docker-compose.yml`, ensure it’s set, e.g.:
-
+Create `config.yaml`:
 ```yaml
-environment:
-  DATABASE_URL: "postgres://postgres:yourpassword@db:5432/docfusiondb"
+database:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: yourpassword
+  database: docfusiondb
+
+server:
+  host: 0.0.0.0
+  port: 8080
+
+logging:
+  level: info
+  format: json
 ```
 
----
+Or use environment variables:
+```bash
+export DATABASE_URL="postgres://postgres:yourpassword@localhost:5432/docfusiondb"
+```
 
-## Example CLI Commands
-
-### Insert a Document
+### 3. Start the Server
 
 ```bash
-docfusiondb insert '{"title":"Hello","body":"World","tags":["example","test"]}'
+# Clone and build
+git clone https://github.com/arrowpeak/docfusiondb.git
+cd docfusiondb
+cargo build --release
+
+# Start HTTP API server
+cargo run -- serve
 ```
 
-Inserts a new document into the `documents` table.
+The API will be available at `http://localhost:8080`
 
-### Query Documents
+## 🌐 HTTP API Usage
+
+### Create Documents
 
 ```bash
-docfusiondb query "SELECT json_extract_path(doc, 'status') AS status, json_extract_path(doc, 'title') AS title FROM documents WHERE json_extract_path(doc, 'status') = 'active'"
+curl -X POST "http://localhost:8080/documents" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "document": {
+      "title": "My Article",
+      "content": "Article content here",
+      "tags": ["rust", "database"],
+      "metadata": {
+        "author": "Developer",
+        "published": true
+      }
+    }
+  }'
 ```
 
-Retrieves all documents where the `status` field equals `"active"`, using the UDF to extract fields from your JSONB.
-
-### Update a Document
+### List Documents
 
 ```bash
-docfusiondb update 42 '{"status":"complete","title":"Updated Title","body":"New content"}'
+curl "http://localhost:8080/documents?limit=10&offset=0"
 ```
 
-Updates the document with ID 42.
+### Get Specific Document
 
----
-
-## Architecture Overview
-
-DocFusionDB’s architecture combines two powerful systems:
-
-### Overview
-
-**DataFusion Query Engine**  
-Acts as the query planner and optimizer. It converts SQL queries into an execution plan. Custom UDFs (such as `json_extract_path`, `json_contains`, and `json_multi_contains`) transform JSON-related expressions into SQL that PostgreSQL can understand.
-
-**Postgres Storage Layer**  
-Utilizes Postgres’ native JSONB support and its fast GIN indexing for document storage and efficient query execution.
-
-### Data Flow Diagram (Conceptual)
-
-```pgsql
-+----------------------+        +--------------------+        +------------------------+
-|   CLI / API Input    | -----> | DataFusion Query   | -----> |   Postgres Database    |
-| (SQL + UDF functions)|        | Planner & Executor |        | (JSONB storage, GIN    |
-|                      |        | (translates UDFs   |        |  indexes for pushdown) |
-|                      |        |  via expr_to_sql)  |        |                        |
-+----------------------+        +--------------------+        +------------------------+
+```bash
+curl "http://localhost:8080/documents/1"
 ```
 
-### UDF Processing:
+### Custom SQL Queries
 
-Custom UDFs let you write SQL like:
+```bash
+curl -X POST "http://localhost:8080/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql": "SELECT json_extract_path(doc, '\''title'\'') as title FROM documents WHERE json_extract_path(doc, '\''published'\'') = '\''true'\''"
+  }'
+```
 
+## 🛠️ CLI Usage
+
+```bash
+# Insert a document
+cargo run -- insert '{"title":"Test","content":"Hello World"}'
+
+# Query documents  
+cargo run -- query "SELECT json_extract_path(doc, 'title') as title FROM documents"
+
+# Update a document
+cargo run -- update 1 '{"title":"Updated","content":"New content"}'
+```
+
+## 📊 Custom JSON Functions
+
+DocFusionDB provides custom UDFs for JSON operations:
+
+### `json_extract_path(doc, 'field')`
+Extract a value from a JSON document:
 ```sql
-SELECT json_extract_path(doc, 'status') 
-FROM documents 
-WHERE json_extract_path(doc,'status') = 'active'
+SELECT json_extract_path(doc, 'title') as title FROM documents
 ```
 
-This is translated internally into a SQL query that Postgres can optimize using its native JSONB support.
+### `json_contains(doc, '{"field": "value"}')`  
+Check if document contains key-value pairs:
+```sql
+SELECT * FROM documents WHERE json_contains(doc, '{"status": "published"}')
+```
+
+### `json_multi_contains(doc, '{"field1": "value1", "field2": "value2"}')`
+Multi-key containment check:
+```sql
+SELECT * FROM documents WHERE json_multi_contains(doc, '{"type": "article", "status": "published"}')
+```
+
+## 🏗️ Architecture
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   HTTP API      │    │   DataFusion    │    │   PostgreSQL    │
+│   (Axum)        │───▶│   Query Engine  │───▶│   JSONB Storage │
+│                 │    │   + Custom UDFs │    │   + GIN Indexes │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+```
+
+**DataFusion** handles query planning and optimization, while **PostgreSQL** provides durable JSONB storage with efficient indexing. Custom UDFs bridge the gap, translating JSON operations into optimized PostgreSQL queries.
+
+## 🧪 Testing
+
+```bash
+# Run unit tests
+cargo test
+
+# Test the API (requires running server)
+./test_api.sh
+```
+
+## ⚙️ Configuration
+
+DocFusionDB supports multiple configuration methods with the following precedence:
+1. Command-line arguments
+2. `config.yaml` file  
+3. Environment variables
+4. Defaults
+
+### Environment Variables
+
+- `DATABASE_URL` - PostgreSQL connection string
+- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` - Database connection details
+- `SERVER_HOST`, `SERVER_PORT` - Server binding configuration
+- `LOG_LEVEL` - Logging level (debug, info, warn, error)
+
+## 🎯 Roadmap
+
+- ✅ **Phase 1**: Foundation (Error handling, Config, Connection pooling, Logging, Tests)
+- ✅ **Phase 2**: HTTP API Server
+- 🔄 **Phase 2**: Bulk operations for efficient data ingestion
+- ⏳ **Phase 3**: Performance optimizations and caching
+- ⏳ **Phase 4**: Production features (Auth, Monitoring, Backup)
+
+## 🤝 Contributing
+
+DocFusionDB is experimental and welcomes contributions! Areas of interest:
+
+- Performance benchmarking and optimization
+- Additional JSON query functions
+- Integration tests
+- Documentation improvements
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-## API Reference
-
-### CLI Commands
-
-| Command | Description | Usage Example |
-|---------|-------------|----------------|
-| `query` | Execute a SQL query against the `documents` table | `docfusiondb query "SELECT json_extract_path(doc,'title') FROM documents"` |
-| `insert` | Insert a new document (JSON string) into `documents` | `docfusiondb insert '{"title":"Hello","body":"World"}'` |
-| `update` | Update an existing document by specifying its ID and new JSON | `docfusiondb update 42 '{"status":"complete"}'` |
-
-### UDF Functions Available in SQL
-
-- `json_extract_path(doc, 'field')`  
-  Extracts the value associated with `'field'` from the JSON document in `doc`.
-
-- `json_contains(doc, '{"field": "value"}')`  
-  Returns true if the JSON in `doc` contains the key-value pair.
-
-- `json_multi_contains(doc, '{"field1": "value1", "field2": "value2"}')`  
-  Performs a multi‑key containment check in a single operation.
-
----
-
-## Tutorial / Demo App
-
-Coming soon
-
-## Contributing
-
-We welcome contributions! Some ideas for “good first issues” include:
-
-- Improving CLI documentation (e.g. add more examples in the README).
-- Writing integration tests with a real Postgres container.
-- Creating a sample dataset loader script.
-
-Please see `CONTRIBUTING.md` for guidelines.
-
----
-
-## License
-
-This project is licensed under the MIT License. See `LICENSE` for details.
+**⚠️ Experimental Status**: DocFusionDB is experimental software. Use in production at your own risk.

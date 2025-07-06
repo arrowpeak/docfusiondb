@@ -57,6 +57,12 @@ pub struct CreateDocumentRequest {
     pub document: JsonValue,
 }
 
+/// Bulk document creation request
+#[derive(Deserialize)]
+pub struct BulkCreateRequest {
+    pub documents: Vec<JsonValue>,
+}
+
 
 
 /// Document response
@@ -80,6 +86,15 @@ pub struct QueryResponse {
     pub execution_time_ms: u128,
 }
 
+/// Bulk operation response
+#[derive(Serialize)]
+pub struct BulkResponse {
+    pub inserted_count: usize,
+    pub execution_time_ms: u128,
+    pub first_id: Option<i32>,
+    pub last_id: Option<i32>,
+}
+
 /// Query parameters for listing documents
 #[derive(Deserialize)]
 pub struct ListQuery {
@@ -100,6 +115,7 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_check))
         .route("/documents", get(list_documents).post(create_document))
+        .route("/documents/bulk", post(bulk_create_documents))
         .route("/documents/:id", get(get_document))
         .route("/query", post(execute_query))
         .with_state(state)
@@ -213,6 +229,11 @@ pub async fn create_document(
 ) -> Result<Json<ApiResponse<DocumentResponse>>, StatusCode> {
     let start = std::time::Instant::now();
     
+    // Basic validation
+    if !request.document.is_object() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    
     info!("Creating new document");
 
     let client = state.db_pool.get().await
@@ -242,7 +263,74 @@ pub async fn create_document(
     Ok(Json(ApiResponse::success(document)))
 }
 
+/// Bulk create documents
+pub async fn bulk_create_documents(
+    State(state): State<AppState>,
+    Json(request): Json<BulkCreateRequest>,
+) -> Result<Json<ApiResponse<BulkResponse>>, StatusCode> {
+    let start = std::time::Instant::now();
+    
+    if request.documents.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    
+    if request.documents.len() > 1000 {
+        // Prevent excessive bulk operations
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    
+    // Basic validation - all documents must be objects
+    for doc in &request.documents {
+        if !doc.is_object() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    
+    info!(document_count = request.documents.len(), "Bulk creating documents");
 
+    let client = state.db_pool.get().await
+        .map_err(|e| {
+            error!("Failed to get database connection: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // Build bulk insert query
+    let mut values = Vec::new();
+    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
+    
+    for (i, doc) in request.documents.iter().enumerate() {
+        values.push(format!("(${}::jsonb)", i + 1));
+        params.push(doc);
+    }
+    
+    let query = format!(
+        "INSERT INTO documents (doc) VALUES {} RETURNING id",
+        values.join(", ")
+    );
+
+    let rows = client.query(&query, &params).await
+        .map_err(|e| {
+            error!("Failed to bulk insert documents: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let inserted_count = rows.len();
+    let first_id = rows.first().map(|row| row.get::<_, i32>(0));
+    let last_id = rows.last().map(|row| row.get::<_, i32>(0));
+
+    let duration = start.elapsed();
+    log_performance!("bulk_create_documents", duration, "count" => inserted_count);
+    info!(count = inserted_count, "Documents bulk created successfully");
+
+    let response = BulkResponse {
+        inserted_count,
+        execution_time_ms: duration.as_millis(),
+        first_id,
+        last_id,
+    };
+
+    Ok(Json(ApiResponse::success(response)))
+}
 
 /// Execute a custom SQL query
 pub async fn execute_query(

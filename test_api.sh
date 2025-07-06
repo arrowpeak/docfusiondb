@@ -44,12 +44,37 @@ echo "4. Listing all documents..."
 curl -s "$BASE_URL/documents?limit=5" | jq '.'
 echo ""
 
+# Test bulk insert
+echo "5. Bulk creating documents..."
+curl -s -X POST "$BASE_URL/documents/bulk" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documents": [
+      {
+        "title": "Bulk Document 1",
+        "content": "First bulk document",
+        "type": "bulk_test"
+      },
+      {
+        "title": "Bulk Document 2", 
+        "content": "Second bulk document",
+        "type": "bulk_test"
+      },
+      {
+        "title": "Bulk Document 3",
+        "content": "Third bulk document", 
+        "type": "bulk_test"
+      }
+    ]
+  }' | jq '.'
+echo ""
+
 # Test query endpoint
-echo "5. Executing a custom query..."
+echo "6. Executing a custom query..."
 curl -s -X POST "$BASE_URL/query" \
   -H "Content-Type: application/json" \
   -d '{
-    "sql": "SELECT json_extract_path(doc, '\''title'\'') as title FROM documents LIMIT 3"
+    "sql": "SELECT json_extract_path(doc, '\''title'\'') as title, json_extract_path(doc, '\''type'\'') as type FROM documents WHERE json_extract_path(doc, '\''type'\'') = '\''bulk_test'\''"
   }' | jq '.'
 echo ""
 
