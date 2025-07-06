@@ -20,6 +20,7 @@ use crate::{DocFusionError, query_span, log_performance};
 pub struct AppState {
     pub db_pool: Pool,
     pub df_context: Arc<SessionContext>,
+    pub query_cache: crate::cache::QueryCache,
 }
 
 /// Standard API response wrapper
@@ -108,6 +109,16 @@ pub struct HealthResponse {
     pub status: String,
     pub version: String,
     pub database: String,
+    pub cache: Option<CacheStatsResponse>,
+}
+
+/// Cache statistics response
+#[derive(Serialize)]
+pub struct CacheStatsResponse {
+    pub entries: usize,
+    pub max_size: usize,
+    pub total_accesses: u64,
+    pub ttl_seconds: u64,
 }
 
 /// Create the API router
@@ -129,10 +140,20 @@ pub async fn health_check(State(state): State<AppState>) -> Result<Json<ApiRespo
         Err(_) => "disconnected",
     };
 
+    // Get cache stats
+    let cache_stats = state.query_cache.stats();
+    let cache_response = CacheStatsResponse {
+        entries: cache_stats.entries,
+        max_size: cache_stats.max_size,
+        total_accesses: cache_stats.total_accesses,
+        ttl_seconds: cache_stats.ttl_seconds,
+    };
+
     let response = HealthResponse {
         status: "healthy".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         database: db_status.to_string(),
+        cache: Some(cache_response),
     };
 
     Ok(Json(ApiResponse::success(response)))
@@ -342,6 +363,22 @@ pub async fn execute_query(
     
     info!("Executing custom query");
 
+    // Check cache first
+    let cache_key = crate::cache::QueryCache::normalize_query(&request.sql);
+    if let Some(cached_rows) = state.query_cache.get(&cache_key) {
+        let duration = start.elapsed();
+        info!("Query served from cache");
+        
+        let row_count = cached_rows.len();
+        let response = QueryResponse {
+            rows: cached_rows,
+            row_count,
+            execution_time_ms: duration.as_millis(),
+        };
+        
+        return Ok(Json(ApiResponse::success(response)));
+    }
+
     // Execute query through DataFusion
     let df = state.df_context.sql(&request.sql).await
         .map_err(|e| {
@@ -394,6 +431,11 @@ pub async fn execute_query(
 
     let duration = start.elapsed();
     log_performance!("execute_query", duration, "rows_returned" => total_rows);
+
+    // Cache the result for future queries (only cache small result sets)
+    if total_rows <= 1000 {
+        state.query_cache.put(cache_key, rows.clone());
+    }
 
     let response = QueryResponse {
         rows,

@@ -36,6 +36,7 @@ enum Commands {
         #[arg(long)]
         host: Option<String>,
     },
+
     /// Run a SQL query against the `documents` table
     Query {
         /// The SQL to execute
@@ -115,10 +116,11 @@ async fn main() -> DocFusionResult<()> {
                 server_config.host = host;
             }
             
-            // Create app state
+            // Create app state with cache
             let app_state = AppState {
                 db_pool: pool.clone(),
                 df_context: Arc::new(df_ctx),
+                query_cache: docfusiondb::cache::QueryCache::default(),
             };
             
             // Create router with middleware
