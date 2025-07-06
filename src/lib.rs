@@ -3,7 +3,18 @@ use futures::stream;
 use log::debug;
 use serde_json::Value;
 use std::sync::Arc;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::NoTls;
+use deadpool_postgres::{Config as PoolConfig, Pool, Runtime};
+
+pub mod error;
+pub mod config;
+pub mod logging;
+
+#[cfg(test)]
+mod tests;
+
+pub use error::{DocFusionError, DocFusionResult};
+pub use config::Config;
 
 use datafusion::arrow::array::{
     Array, ArrayRef, BooleanBuilder, Int32Builder, StringArray, StringBuilder,
@@ -248,21 +259,31 @@ fn filters_to_sql(filters: &[Expr]) -> Option<String> {
 /// A DataFusion TableProvider backed by Postgres.
 #[derive(Debug)]
 pub struct PostgresTable {
-    client: Client,
+    pool: Pool,
 }
 
 impl PostgresTable {
-    /// Create a new PostgresTable by opening a Tokio-Postgres connection.
-    pub async fn new() -> Result<Self, tokio_postgres::Error> {
-        let (client, conn) = tokio_postgres::connect(
-            "host=localhost user=postgres password=yourpassword dbname=docfusiondb",
-            NoTls,
-        )
-        .await?;
-        tokio::spawn(async move {
-            let _ = conn.await;
-        });
-        Ok(Self { client })
+    /// Create a new PostgresTable with connection pooling.
+    pub async fn new(config: &config::DatabaseConfig) -> DocFusionResult<Self> {
+        let mut cfg = PoolConfig::new();
+        cfg.host = Some(config.host.clone());
+        cfg.port = Some(config.port);
+        cfg.user = Some(config.user.clone());
+        cfg.password = Some(config.password.clone());
+        cfg.dbname = Some(config.database.clone());
+        cfg.pool = Some(deadpool_postgres::PoolConfig::new(config.max_connections));
+        
+        let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls)?;
+        
+        // Test the connection
+        let _conn = pool.get().await?;
+        
+        Ok(Self { pool })
+    }
+    
+    /// Create a new PostgresTable from a connection pool.
+    pub fn from_pool(pool: Pool) -> Self {
+        Self { pool }
     }
 }
 
@@ -377,8 +398,12 @@ impl TableProvider for PostgresTable {
         let where_clause = filters_to_sql(filters).unwrap_or_default();
         let q = format!("SELECT id, doc::text FROM documents{}", where_clause);
         debug!("Executing SQL: {}", q);
-        let rows = self
-            .client
+        
+        let client = self.pool.get().await.map_err(|e| {
+            DataFusionError::Execution(format!("Failed to get connection from pool: {}", e))
+        })?;
+        
+        let rows = client
             .query(&q, &[])
             .await
             .map_err(|e| DataFusionError::Execution(e.to_string()))?;
@@ -425,5 +450,19 @@ impl TableProvider for PostgresTable {
 
         let batch = RecordBatch::try_new(projected_schema.clone(), projected_arrays)?;
         Ok(Arc::new(SimpleExec::new(vec![batch], projected_schema)))
+    }
+}
+
+/// Helper function to convert deadpool config
+impl From<&config::DatabaseConfig> for PoolConfig {
+    fn from(config: &config::DatabaseConfig) -> Self {
+        let mut cfg = PoolConfig::new();
+        cfg.host = Some(config.host.clone());
+        cfg.port = Some(config.port);
+        cfg.user = Some(config.user.clone());
+        cfg.password = Some(config.password.clone());
+        cfg.dbname = Some(config.database.clone());
+        cfg.pool = Some(deadpool_postgres::PoolConfig::new(config.max_connections));
+        cfg
     }
 }

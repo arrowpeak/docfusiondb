@@ -12,10 +12,20 @@ datafusion = "46.0.1"
 env_logger = "0.11.8"
 futures = "0.3.31"
 log = "0.4.27"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 once_cell = "1.21.3"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.140"
+serde_yaml = "0.9"
+thiserror = "1.0"
 tokio =  { version = "1.44.2", features = ["rt-multi-thread", "macros"] } 
 tokio-postgres = { version = "0.7.13", features = ["with-serde_json-1"] }
+deadpool-postgres = "0.12"
+num_cpus = "1.16"
+
+[dev-dependencies]
+tempfile = "3.14"
 
 [lib]
 name = "docfusiondb"

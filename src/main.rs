@@ -5,12 +5,15 @@ use datafusion::logical_expr::create_udf;
 use datafusion::logical_expr_common::signature::Volatility;
 use docfusiondb::{
     PostgresTable, json_contains_udf, json_extract_path_udf, json_multi_contains_udf,
+    Config, DocFusionResult, DocFusionError, logging, query_span, log_performance,
 };
 use serde_json::Value as JsonValue;
-use std::env;
+
 use std::sync::Arc;
 use std::time::Instant;
 use tokio_postgres::NoTls;
+use deadpool_postgres::{Config as PoolConfig, Runtime};
+use tracing::{info, warn};
 
 /// DocFusionDB CLI
 #[derive(Parser)]
@@ -42,13 +45,15 @@ enum Commands {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    env_logger::init();
-
-    // Read the DATABASE_URL env var, or default to a local Postgres
-    let database_url = env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:yourpassword@localhost:5432/docfusiondb".into());
+async fn main() -> DocFusionResult<()> {
+    // Load configuration first (needed for logging setup)
+    let config = Config::load()?;
+    
+    // Initialize structured logging
+    logging::init_logging(&config.logging)?;
+    
+    info!("Starting DocFusionDB CLI");
+    info!(?config, "Loaded configuration");
 
     // Parse CLI arguments
     let cli = Cli::parse();
@@ -78,41 +83,61 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // Register Postgres-backed table with DataFusion
-    let df_table = PostgresTable::new().await?;
+    let df_table = PostgresTable::new(&config.database).await?;
     df_ctx.register_table("documents", Arc::new(df_table))?;
 
-    // Open a direct Postgres client for writes, using DATABASE_URL
-    let (pg_client, pg_conn) = tokio_postgres::connect(&database_url, NoTls).await?;
-    tokio::spawn(async move {
-        let _ = pg_conn.await;
-    });
+    // Create connection pool for writes
+    let pool_config = PoolConfig::from(&config.database);
+    let pool = pool_config.create_pool(Some(Runtime::Tokio1), NoTls)?;
+    let pg_client = pool.get().await?;
 
     match cli.command {
         Commands::Query { sql } => {
-            println!("Running query: {}", sql);
+            let _span = query_span!(&sql);
+            info!("Executing query");
+            
+            let start = Instant::now();
             let df = df_ctx.sql(&sql).await?;
             let batches = df.collect().await?;
             let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            let duration = start.elapsed();
+            
+            log_performance!("query_execution", duration, "rows_returned" => rows);
             println!("Rows returned: {}", rows);
-
-            let start = Instant::now();
-            let df2 = df_ctx.sql(&sql).await?;
-            df2.collect().await?;
-            println!("Time taken: {:.3?}", start.elapsed());
+            println!("Time taken: {:?}", duration);
         }
         Commands::Insert { json } => {
+            info!("Inserting document");
             // Parse the JSON string into a serde_json::Value
-            let json_value: JsonValue =
-                serde_json::from_str(&json).map_err(|e| anyhow::anyhow!("Invalid JSON: {}", e))?;
+            let json_value: JsonValue = serde_json::from_str(&json)
+                .map_err(|e| DocFusionError::invalid_document(format!("Invalid JSON: {}", e)))?;
+            
+            let start = Instant::now();
             let stmt = "INSERT INTO documents (doc) VALUES ($1::jsonb)";
             let n = pg_client.execute(stmt, &[&json_value]).await?;
+            let duration = start.elapsed();
+            
+            log_performance!("document_insert", duration, "rows_affected" => n);
+            info!(rows_inserted = n, "Document inserted successfully");
             println!("Inserted {} row(s)", n);
         }
         Commands::Update { id, json } => {
-            let json_value: JsonValue =
-                serde_json::from_str(&json).map_err(|e| anyhow::anyhow!("Invalid JSON: {}", e))?;
+            info!(document_id = id, "Updating document");
+            let json_value: JsonValue = serde_json::from_str(&json)
+                .map_err(|e| DocFusionError::invalid_document(format!("Invalid JSON: {}", e)))?;
+            
+            let start = Instant::now();
             let stmt = "UPDATE documents SET doc = $1::jsonb WHERE id = $2";
             let n = pg_client.execute(stmt, &[&json_value, &id]).await?;
+            let duration = start.elapsed();
+            
+            if n == 0 {
+                warn!(document_id = id, "Document not found for update");
+                return Err(DocFusionError::document_not_found(id));
+            }
+            
+            log_performance!("document_update", duration, "rows_affected" => n);
+            info!(document_id = id, rows_updated = n, "Document updated successfully");
             println!("Updated {} row(s)", n);
         }
     }
