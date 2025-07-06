@@ -9,6 +9,7 @@ use deadpool_postgres::{Config as PoolConfig, Pool, Runtime};
 pub mod error;
 pub mod config;
 pub mod logging;
+pub mod api;
 
 #[cfg(test)]
 mod tests;

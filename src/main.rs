@@ -6,6 +6,7 @@ use datafusion::logical_expr_common::signature::Volatility;
 use docfusiondb::{
     PostgresTable, json_contains_udf, json_extract_path_udf, json_multi_contains_udf,
     Config, DocFusionResult, DocFusionError, logging, query_span, log_performance,
+    api::{create_router, AppState},
 };
 use serde_json::Value as JsonValue;
 
@@ -14,6 +15,7 @@ use std::time::Instant;
 use tokio_postgres::NoTls;
 use deadpool_postgres::{Config as PoolConfig, Runtime};
 use tracing::{info, warn};
+use axum::serve;
 
 /// DocFusionDB CLI
 #[derive(Parser)]
@@ -25,6 +27,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Start the HTTP API server
+    Serve {
+        /// Port to bind to (overrides config)
+        #[arg(short, long)]
+        port: Option<u16>,
+        /// Host to bind to (overrides config)
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// Run a SQL query against the `documents` table
     Query {
         /// The SQL to execute
@@ -92,6 +103,38 @@ async fn main() -> DocFusionResult<()> {
     let pg_client = pool.get().await?;
 
     match cli.command {
+        Commands::Serve { port, host } => {
+            info!("Starting HTTP API server");
+            
+            // Override config with CLI args if provided
+            let mut server_config = config.server.clone();
+            if let Some(port) = port {
+                server_config.port = port;
+            }
+            if let Some(host) = host {
+                server_config.host = host;
+            }
+            
+            // Create app state
+            let app_state = AppState {
+                db_pool: pool.clone(),
+                df_context: Arc::new(df_ctx),
+            };
+            
+            // Create router with middleware
+            let app = create_router(app_state)
+                .layer(tower_http::trace::TraceLayer::new_for_http())
+                .layer(tower_http::cors::CorsLayer::permissive());
+            
+            let bind_addr = format!("{}:{}", server_config.host, server_config.port);
+            info!("Server listening on {}", bind_addr);
+            
+            let listener = tokio::net::TcpListener::bind(&bind_addr).await
+                .map_err(|e| DocFusionError::internal(format!("Failed to bind to {}: {}", bind_addr, e)))?;
+            
+            serve(listener, app).await
+                .map_err(|e| DocFusionError::internal(format!("Server error: {}", e)))?;
+        }
         Commands::Query { sql } => {
             let _span = query_span!(&sql);
             info!("Executing query");

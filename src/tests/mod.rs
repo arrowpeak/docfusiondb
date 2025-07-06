@@ -1,5 +1,7 @@
 use crate::{config::*, error::*, Config};
 
+mod api_tests;
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;

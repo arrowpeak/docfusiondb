@@ -1,0 +1,332 @@
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::Json,
+    routing::{get, post},
+    Router,
+};
+use datafusion::execution::context::SessionContext;
+use deadpool_postgres::Pool;
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tracing::{info, warn, error};
+
+use crate::{DocFusionError, query_span, log_performance};
+
+/// Application state shared across handlers
+#[derive(Clone)]
+pub struct AppState {
+    pub db_pool: Pool,
+    pub df_context: Arc<SessionContext>,
+}
+
+/// Standard API response wrapper
+#[derive(Serialize)]
+pub struct ApiResponse<T> {
+    pub success: bool,
+    pub data: Option<T>,
+    pub error: Option<String>,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+impl<T> ApiResponse<T> {
+    pub fn success(data: T) -> Self {
+        Self {
+            success: true,
+            data: Some(data),
+            error: None,
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
+    pub fn error(message: String) -> ApiResponse<()> {
+        ApiResponse {
+            success: false,
+            data: None,
+            error: Some(message),
+            timestamp: chrono::Utc::now(),
+        }
+    }
+}
+
+/// Document creation request
+#[derive(Deserialize)]
+pub struct CreateDocumentRequest {
+    pub document: JsonValue,
+}
+
+
+
+/// Document response
+#[derive(Serialize)]
+pub struct DocumentResponse {
+    pub id: i32,
+    pub document: JsonValue,
+}
+
+/// Query request
+#[derive(Deserialize)]
+pub struct QueryRequest {
+    pub sql: String,
+}
+
+/// Query response
+#[derive(Serialize)]
+pub struct QueryResponse {
+    pub rows: Vec<HashMap<String, JsonValue>>,
+    pub row_count: usize,
+    pub execution_time_ms: u128,
+}
+
+/// Query parameters for listing documents
+#[derive(Deserialize)]
+pub struct ListQuery {
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+/// Health check response
+#[derive(Serialize)]
+pub struct HealthResponse {
+    pub status: String,
+    pub version: String,
+    pub database: String,
+}
+
+/// Create the API router
+pub fn create_router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health_check))
+        .route("/documents", get(list_documents).post(create_document))
+        .route("/documents/:id", get(get_document))
+        .route("/query", post(execute_query))
+        .with_state(state)
+}
+
+/// Health check endpoint
+pub async fn health_check(State(state): State<AppState>) -> Result<Json<ApiResponse<HealthResponse>>, StatusCode> {
+    // Test database connection
+    let db_status = match state.db_pool.get().await {
+        Ok(_) => "connected",
+        Err(_) => "disconnected",
+    };
+
+    let response = HealthResponse {
+        status: "healthy".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        database: db_status.to_string(),
+    };
+
+    Ok(Json(ApiResponse::success(response)))
+}
+
+/// List documents with pagination
+pub async fn list_documents(
+    Query(params): Query<ListQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<DocumentResponse>>>, StatusCode> {
+    let start = std::time::Instant::now();
+    
+    let limit = params.limit.unwrap_or(10).min(100); // Max 100 items per request
+    let offset = params.offset.unwrap_or(0);
+    
+    info!(limit = limit, offset = offset, "Listing documents");
+
+    let client = state.db_pool.get().await
+        .map_err(|e| {
+            error!("Failed to get database connection: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let query = format!(
+        "SELECT id, doc as document FROM documents ORDER BY id LIMIT {} OFFSET {}",
+        limit, offset
+    );
+
+    let rows = client.query(&query, &[]).await
+        .map_err(|e| {
+            error!("Database query failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let documents: Vec<DocumentResponse> = rows
+        .into_iter()
+        .map(|row| DocumentResponse {
+            id: row.get(0),
+            document: row.get(1),
+        })
+        .collect();
+
+    let duration = start.elapsed();
+    log_performance!("list_documents", duration, "count" => documents.len());
+
+    Ok(Json(ApiResponse::success(documents)))
+}
+
+/// Get a specific document by ID
+pub async fn get_document(
+    Path(id): Path<i32>,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<DocumentResponse>>, StatusCode> {
+    let start = std::time::Instant::now();
+    
+    info!(document_id = id, "Getting document");
+
+    let client = state.db_pool.get().await
+        .map_err(|e| {
+            error!("Failed to get database connection: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let rows = client.query(
+        "SELECT id, doc as document FROM documents WHERE id = $1",
+        &[&id],
+    ).await
+    .map_err(|e| {
+        error!("Database query failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if rows.is_empty() {
+        warn!(document_id = id, "Document not found");
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let row = &rows[0];
+    let document = DocumentResponse {
+        id: row.get(0),
+        document: row.get(1),
+    };
+
+    let duration = start.elapsed();
+    log_performance!("get_document", duration, "document_id" => id);
+
+    Ok(Json(ApiResponse::success(document)))
+}
+
+/// Create a new document
+pub async fn create_document(
+    State(state): State<AppState>,
+    Json(request): Json<CreateDocumentRequest>,
+) -> Result<Json<ApiResponse<DocumentResponse>>, StatusCode> {
+    let start = std::time::Instant::now();
+    
+    info!("Creating new document");
+
+    let client = state.db_pool.get().await
+        .map_err(|e| {
+            error!("Failed to get database connection: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let row = client.query_one(
+        "INSERT INTO documents (doc) VALUES ($1::jsonb) RETURNING id, doc as document",
+        &[&request.document],
+    ).await
+    .map_err(|e| {
+        error!("Failed to insert document: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let document = DocumentResponse {
+        id: row.get(0),
+        document: row.get(1),
+    };
+
+    let duration = start.elapsed();
+    log_performance!("create_document", duration, "document_id" => document.id);
+    info!(document_id = document.id, "Document created successfully");
+
+    Ok(Json(ApiResponse::success(document)))
+}
+
+
+
+/// Execute a custom SQL query
+pub async fn execute_query(
+    State(state): State<AppState>,
+    Json(request): Json<QueryRequest>,
+) -> Result<Json<ApiResponse<QueryResponse>>, StatusCode> {
+    let _span = query_span!(&request.sql);
+    let start = std::time::Instant::now();
+    
+    info!("Executing custom query");
+
+    // Execute query through DataFusion
+    let df = state.df_context.sql(&request.sql).await
+        .map_err(|e| {
+            error!("DataFusion query failed: {}", e);
+            StatusCode::BAD_REQUEST
+        })?;
+
+    let batches = df.collect().await
+        .map_err(|e| {
+            error!("Failed to collect query results: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // Convert Arrow batches to JSON
+    let mut rows = Vec::new();
+    let mut total_rows = 0;
+
+    for batch in batches {
+        total_rows += batch.num_rows();
+        let schema = batch.schema();
+        
+        for row_idx in 0..batch.num_rows() {
+            let mut row_map = HashMap::new();
+            
+            for (col_idx, field) in schema.fields().iter().enumerate() {
+                let column = batch.column(col_idx);
+                let value = if column.is_null(row_idx) {
+                    JsonValue::Null
+                } else {
+                    // Simplified conversion - in production, handle more types
+                    match column.data_type() {
+                        datafusion::arrow::datatypes::DataType::Int32 => {
+                            let array = column.as_any().downcast_ref::<datafusion::arrow::array::Int32Array>().unwrap();
+                            JsonValue::Number(serde_json::Number::from(array.value(row_idx)))
+                        }
+                        datafusion::arrow::datatypes::DataType::Utf8 => {
+                            let array = column.as_any().downcast_ref::<datafusion::arrow::array::StringArray>().unwrap();
+                            JsonValue::String(array.value(row_idx).to_string())
+                        }
+                        _ => JsonValue::String("unsupported_type".to_string()),
+                    }
+                };
+                
+                row_map.insert(field.name().clone(), value);
+            }
+            
+            rows.push(row_map);
+        }
+    }
+
+    let duration = start.elapsed();
+    log_performance!("execute_query", duration, "rows_returned" => total_rows);
+
+    let response = QueryResponse {
+        rows,
+        row_count: total_rows,
+        execution_time_ms: duration.as_millis(),
+    };
+
+    Ok(Json(ApiResponse::success(response)))
+}
+
+/// Convert DocFusionError to HTTP status code
+impl From<DocFusionError> for StatusCode {
+    fn from(error: DocFusionError) -> Self {
+        match error {
+            DocFusionError::DocumentNotFound { .. } => StatusCode::NOT_FOUND,
+            DocFusionError::InvalidDocument { .. } => StatusCode::BAD_REQUEST,
+            DocFusionError::InvalidQuery { .. } => StatusCode::BAD_REQUEST,
+            DocFusionError::Config { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            DocFusionError::ConnectionTimeout => StatusCode::SERVICE_UNAVAILABLE,
+            DocFusionError::OperationTimeout => StatusCode::REQUEST_TIMEOUT,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
