@@ -403,7 +403,7 @@ impl TableProvider for PostgresTable {
         debug!("Executing SQL: {}", q);
 
         let client = self.pool.get().await.map_err(|e| {
-            ataFusionError::Execution(format!("Failed to get connection from pool: {e}"))
+            DataFusionError::Execution(format!("Failed to get connection from pool: {e}"))
         })?;
 
         let rows = client
