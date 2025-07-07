@@ -6,7 +6,7 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 pub fn init_logging(config: &LogConfig) -> DocFusionResult<()> {
     let env_filter = EnvFilter::try_new(&config.level)
         .or_else(|_| EnvFilter::try_new("info"))
-        .map_err(|e| DocFusionError::config(format!("Invalid log level: {}", e)))?;
+        .map_err(|e| DocFusionError::config(format!("Invalid log level: {e}")))?;
 
     let registry = tracing_subscriber::registry().with(env_filter);
 

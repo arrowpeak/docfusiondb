@@ -212,38 +212,38 @@ fn expr_to_sql(expr: &Expr) -> Option<String> {
                 Expr::Literal(ScalarValue::Utf8(Some(k))) => k.clone(),
                 _ => return None,
             };
-            Some(format!("{}->>'{}'", col, key))
+            Some(format!("{col}->>'{key}'"))
         }
         Expr::ScalarFunction(ScalarFunction { func, args }) if func.name() == "json_contains" => {
             let col = expr_to_sql(&args[0])?;
             let pat = expr_to_sql(&args[1])?;
-            Some(format!("{} @> {}", col, pat))
+            Some(format!("{col} @> {pat}"))
         }
         Expr::ScalarFunction(ScalarFunction { func, args })
             if func.name() == "json_multi_contains" =>
         {
             let col = expr_to_sql(&args[0])?;
             let pat = expr_to_sql(&args[1])?;
-            Some(format!("{} @> {}", col, pat))
+            Some(format!("{col} @> {pat}"))
         }
         Expr::BinaryExpr(be) if be.op == Operator::Eq => {
             let l = expr_to_sql(&be.left)?;
             let r = expr_to_sql(&be.right)?;
             if l.starts_with("doc.") {
                 let field = l.strip_prefix("doc.").unwrap();
-                Some(format!("doc->>'{}' = {}", field, r))
+                Some(format!("doc->>'{field}' = {r}"))
             } else {
-                Some(format!("{} = {}", l, r))
+                Some(format!("{l} = {r}"))
             }
         }
         Expr::BinaryExpr(be) if be.op == Operator::And => {
             let l = expr_to_sql(&be.left)?;
             let r = expr_to_sql(&be.right)?;
-            Some(format!("({} AND {})", l, r))
+            Some(format!("({l} AND {r})"))
         }
         Expr::Column(c) => Some(c.name.clone()),
         Expr::Literal(s) => match s {
-            ScalarValue::Utf8(Some(v)) => Some(format!("'{}'", v)),
+            ScalarValue::Utf8(Some(v)) => Some(format!("'{v}'")),
             _ => Some(s.to_string()),
         },
         _ => None,
@@ -315,7 +315,7 @@ impl SimpleExec {
 
 impl DisplayAs for SimpleExec {
     fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SimpleExec({:?})", self)
+        write!(f, "SimpleExec({self:?})")
     }
 }
 
@@ -399,11 +399,11 @@ impl TableProvider for PostgresTable {
         _limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
         let where_clause = filters_to_sql(filters).unwrap_or_default();
-        let q = format!("SELECT id, doc::text FROM documents{}", where_clause);
+        let q = format!("SELECT id, doc::text FROM documents{where_clause}");
         debug!("Executing SQL: {}", q);
 
         let client = self.pool.get().await.map_err(|e| {
-            DataFusionError::Execution(format!("Failed to get connection from pool: {}", e))
+            ataFusionError::Execution(format!("Failed to get connection from pool: {e}"))
         })?;
 
         let rows = client
@@ -440,8 +440,7 @@ impl TableProvider for PostgresTable {
                         1 => cols.push(doc_arr.clone()),
                         _ => {
                             return Err(DataFusionError::Internal(format!(
-                                "Invalid projection index {}",
-                                i
+                                "Invalid projection index {i}"
                             )));
                         }
                     }

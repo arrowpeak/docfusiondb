@@ -264,8 +264,7 @@ pub async fn list_documents(
     })?;
 
     let query = format!(
-        "SELECT id, doc as document FROM documents ORDER BY id LIMIT {} OFFSET {}",
-        limit, offset
+        "SELECT id, doc as document FROM documents ORDER BY id LIMIT {limit} OFFSET {offset}"
     );
 
     let rows = client.query(&query, &[]).await.map_err(|e| {
