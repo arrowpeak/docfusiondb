@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DocFusionDB Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .section {
+            margin-bottom: 30px;
+        }
+        .section h2 {
+            color: #34495e;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+        .input-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        input, textarea, button {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        textarea {
+            height: 100px;
+            resize: vertical;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #2980b9;
+        }
+        button:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+        }
+        .response {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .error {
+            background: #f8d7da;
+            border-color: #f5c6cb;
+            color: #721c24;
+        }
+        .success {
+            background: #d4edda;
+            border-color: #c3e6cb;
+            color: #155724;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .status-bar {
+            background: #2c3e50;
+            color: white;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .metrics {
+            display: flex;
+            gap: 20px;
+        }
+        .metric {
+            text-align: center;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #3498db;
+        }
+        .metric-label {
+            font-size: 12px;
+            opacity: 0.8;
+        }
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>🦀 DocFusionDB Demo</h1>
+    
+    <div class="status-bar">
+        <div>
+            <strong>Server Status:</strong> <span id="server-status">Checking...</span>
+        </div>
+        <div class="metrics">
+            <div class="metric">
+                <div class="metric-value" id="doc-count">-</div>
+                <div class="metric-label">Documents</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="cache-hits">-</div>
+                <div class="metric-label">Cache Hit Rate</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" id="uptime">-</div>
+                <div class="metric-label">Uptime (s)</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="section">
+            <h2>📝 Create Document</h2>
+            <div class="input-group">
+                <label for="doc-json">JSON Document:</label>
+                <textarea id="doc-json" placeholder='{"title": "My Article", "content": "Hello World", "tags": ["rust", "database"]}'></textarea>
+            </div>
+            <button onclick="createDocument()">Create Document</button>
+            <div id="create-response" class="response" style="display: none;"></div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="container">
+            <div class="section">
+                <h2>📋 List Documents</h2>
+                <div class="input-group">
+                    <label for="list-limit">Limit:</label>
+                    <input type="number" id="list-limit" value="10" min="1" max="100">
+                </div>
+                <button onclick="listDocuments()">List Documents</button>
+                <div id="list-response" class="response" style="display: none;"></div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="section">
+                <h2>🔍 Custom Query</h2>
+                <div class="input-group">
+                    <label for="query-sql">SQL Query:</label>
+                    <textarea id="query-sql" placeholder="SELECT json_extract_path(doc, 'title') as title FROM documents WHERE json_contains(doc, '{\"tags\": [\"rust\"]}')"></textarea>
+                </div>
+                <button onclick="executeQuery()">Execute Query</button>
+                <div id="query-response" class="response" style="display: none;"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="section">
+            <h2>📦 Bulk Operations</h2>
+            <div class="input-group">
+                <label for="bulk-docs">JSON Documents (one per line):</label>
+                <textarea id="bulk-docs" placeholder='{"title": "Doc 1", "type": "article"}
+{"title": "Doc 2", "type": "blog"}
+{"title": "Doc 3", "type": "note"}'></textarea>
+            </div>
+            <button onclick="bulkCreate()">Bulk Create</button>
+            <div id="bulk-response" class="response" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const API_BASE = 'http://localhost:8080';
+        const API_KEY = 'demo-api-key'; // For demo purposes
+
+        // Utility functions
+        function showResponse(elementId, data, isError = false) {
+            const element = document.getElementById(elementId);
+            element.style.display = 'block';
+            element.className = `response ${isError ? 'error' : 'success'}`;
+            element.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+        }
+
+        async function apiRequest(endpoint, options = {}) {
+            const headers = {
+                'Content-Type': 'application/json',
+                'X-API-Key': API_KEY,
+                ...options.headers
+            };
+
+            try {
+                const response = await fetch(`${API_BASE}${endpoint}`, {
+                    ...options,
+                    headers
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                return await response.json();
+            } catch (error) {
+                throw new Error(`Request failed: ${error.message}`);
+            }
+        }
+
+        // Document operations
+        async function createDocument() {
+            const jsonInput = document.getElementById('doc-json');
+            const jsonText = jsonInput.value.trim();
+
+            if (!jsonText) {
+                showResponse('create-response', 'Please enter a JSON document', true);
+                return;
+            }
+
+            try {
+                const document = JSON.parse(jsonText);
+                const response = await apiRequest('/documents', {
+                    method: 'POST',
+                    body: JSON.stringify({ document })
+                });
+                showResponse('create-response', response);
+                jsonInput.value = '';
+                updateMetrics(); // Refresh metrics
+            } catch (error) {
+                showResponse('create-response', error.message, true);
+            }
+        }
+
+        async function listDocuments() {
+            const limit = document.getElementById('list-limit').value;
+            
+            try {
+                const response = await apiRequest(`/documents?limit=${limit}&offset=0`);
+                showResponse('list-response', response);
+            } catch (error) {
+                showResponse('list-response', error.message, true);
+            }
+        }
+
+        async function executeQuery() {
+            const sql = document.getElementById('query-sql').value.trim();
+
+            if (!sql) {
+                showResponse('query-response', 'Please enter a SQL query', true);
+                return;
+            }
+
+            try {
+                const response = await apiRequest('/query', {
+                    method: 'POST',
+                    body: JSON.stringify({ sql })
+                });
+                showResponse('query-response', response);
+            } catch (error) {
+                showResponse('query-response', error.message, true);
+            }
+        }
+
+        async function bulkCreate() {
+            const bulkText = document.getElementById('bulk-docs').value.trim();
+
+            if (!bulkText) {
+                showResponse('bulk-response', 'Please enter documents (one JSON per line)', true);
+                return;
+            }
+
+            try {
+                const lines = bulkText.split('\n').filter(line => line.trim());
+                const documents = lines.map(line => JSON.parse(line.trim()));
+                
+                const response = await apiRequest('/documents/bulk', {
+                    method: 'POST',
+                    body: JSON.stringify({ documents })
+                });
+                showResponse('bulk-response', response);
+                document.getElementById('bulk-docs').value = '';
+                updateMetrics(); // Refresh metrics
+            } catch (error) {
+                showResponse('bulk-response', error.message, true);
+            }
+        }
+
+        // Status and metrics
+        async function checkServerStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/health`);
+                if (response.ok) {
+                    document.getElementById('server-status').textContent = '✅ Online';
+                    document.getElementById('server-status').style.color = '#27ae60';
+                } else {
+                    throw new Error('Server error');
+                }
+            } catch (error) {
+                document.getElementById('server-status').textContent = '❌ Offline';
+                document.getElementById('server-status').style.color = '#e74c3c';
+            }
+        }
+
+        async function updateMetrics() {
+            try {
+                const response = await fetch(`${API_BASE}/metrics`);
+                if (response.ok) {
+                    const data = await response.json();
+                    const metrics = data.data;
+                    
+                    document.getElementById('doc-count').textContent = metrics.document_count;
+                    document.getElementById('cache-hits').textContent = (metrics.query_cache_hit_rate * 100).toFixed(1) + '%';
+                    document.getElementById('uptime').textContent = metrics.uptime_seconds;
+                }
+            } catch (error) {
+                console.warn('Failed to update metrics:', error);
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            checkServerStatus();
+            updateMetrics();
+            
+            // Refresh metrics every 30 seconds
+            setInterval(updateMetrics, 30000);
+            
+            // Check server status every 10 seconds
+            setInterval(checkServerStatus, 10000);
+            
+            // Set sample data
+            document.getElementById('doc-json').value = JSON.stringify({
+                title: "Sample Article",
+                content: "This is a sample document for the DocFusionDB demo",
+                tags: ["rust", "database", "demo"],
+                metadata: {
+                    author: "Demo User",
+                    published: true,
+                    created_at: new Date().toISOString()
+                }
+            }, null, 2);
+
+            document.getElementById('query-sql').value = "SELECT json_extract_path(doc, 'title') as title, json_extract_path(doc, 'metadata', 'author') as author FROM documents WHERE json_contains(doc, '{\"published\": true}')";
+        });
+    </script>
+</body>
+</html>

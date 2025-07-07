@@ -129,12 +129,28 @@ pub struct ServerConfig {
     pub workers: usize,
 }
 
+/// Authentication configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    pub enabled: bool,
+    pub api_key: Option<String>,
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             host: "0.0.0.0".to_string(),
             port: 8080,
             workers: num_cpus::get(),
+        }
+    }
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: None,
         }
     }
 }
@@ -163,6 +179,7 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub server: ServerConfig,
     pub logging: LogConfig,
+    pub auth: AuthConfig,
 }
 
 impl Default for Config {
@@ -171,6 +188,7 @@ impl Default for Config {
             database: DatabaseConfig::default(),
             server: ServerConfig::default(),
             logging: LogConfig::default(),
+            auth: AuthConfig::default(),
         }
     }
 }
@@ -202,6 +220,13 @@ impl Config {
                 level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
                 format: env::var("LOG_FORMAT").unwrap_or_else(|_| "json".to_string()),
                 file: env::var("LOG_FILE").ok(),
+            },
+            auth: AuthConfig {
+                enabled: env::var("AUTH_ENABLED")
+                    .unwrap_or_else(|_| "false".to_string())
+                    .parse()
+                    .map_err(|_| DocFusionError::config("Invalid AUTH_ENABLED"))?,
+                api_key: env::var("API_KEY").ok(),
             },
         })
     }

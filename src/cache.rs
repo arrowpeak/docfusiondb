@@ -15,6 +15,8 @@ pub struct QueryCache {
 struct CacheInner {
     entries: HashMap<String, CacheEntry>,
     access_order: Vec<String>, // For LRU eviction
+    hits: u64,
+    misses: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +33,8 @@ impl QueryCache {
             inner: Arc::new(RwLock::new(CacheInner {
                 entries: HashMap::new(),
                 access_order: Vec::new(),
+                hits: 0,
+                misses: 0,
             })),
             ttl: Duration::from_secs(ttl_seconds),
             max_size,
@@ -50,19 +54,23 @@ impl QueryCache {
             }
         }
         
-        if let Some(entry) = cache.entries.get_mut(query) {
+        if cache.entries.contains_key(query) {
             // Update access stats
-            entry.access_count += 1;
-            let data = entry.data.clone();
-            
-            // Move to end of access order (most recently used)
-            cache.access_order.retain(|q| q != query);
-            cache.access_order.push(query.to_string());
-
-            Some(data)
-        } else {
-            None
+            if let Some(entry) = cache.entries.get_mut(query) {
+                entry.access_count += 1;
+                let data = entry.data.clone();
+                
+                // Move to end of access order (most recently used)
+                cache.access_order.retain(|q| q != query);
+                cache.access_order.push(query.to_string());
+                
+                cache.hits += 1;
+                return Some(data);
+            }
         }
+        
+        cache.misses += 1;
+        None
     }
 
     /// Store query result in cache
@@ -120,10 +128,54 @@ impl QueryCache {
         // Simple normalization: trim whitespace and convert to lowercase
         sql.trim().to_lowercase()
     }
+    
+    pub fn get_stats(&self) -> EnhancedCacheStats {
+        let Ok(cache) = self.inner.read() else { 
+            return EnhancedCacheStats {
+                size: 0,
+                hit_rate: 0.0,
+                entries: 0,
+                max_size: self.max_size,
+                total_accesses: 0,
+                ttl_seconds: self.ttl.as_secs(),
+            }; 
+        };
+        
+        let total_requests = cache.hits + cache.misses;
+        let hit_rate = if total_requests > 0 {
+            cache.hits as f64 / total_requests as f64
+        } else {
+            0.0
+        };
+        
+        let total_accesses: u64 = cache.entries.values()
+            .map(|entry| entry.access_count)
+            .sum();
+        
+        EnhancedCacheStats {
+            size: cache.entries.len(),
+            hit_rate,
+            entries: cache.entries.len(),
+            max_size: self.max_size,
+            total_accesses,
+            ttl_seconds: self.ttl.as_secs(),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct CacheStats {
+    pub entries: usize,
+    pub max_size: usize,
+    pub total_accesses: u64,
+    pub ttl_seconds: u64,
+}
+
+/// Enhanced cache statistics for metrics
+#[derive(Debug, Clone)]
+pub struct EnhancedCacheStats {
+    pub size: usize,
+    pub hit_rate: f64,
     pub entries: usize,
     pub max_size: usize,
     pub total_accesses: u64,

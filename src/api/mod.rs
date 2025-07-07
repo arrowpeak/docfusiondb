@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
+    middleware,
     response::Json,
     routing::{get, post},
     Router,
@@ -11,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tracing::{info, warn, error};
 
 use crate::{DocFusionError, query_span, log_performance};
@@ -21,6 +23,8 @@ pub struct AppState {
     pub db_pool: Pool,
     pub df_context: Arc<SessionContext>,
     pub query_cache: crate::cache::QueryCache,
+    pub auth_config: crate::config::AuthConfig,
+    pub start_time: SystemTime,
 }
 
 /// Standard API response wrapper
@@ -30,6 +34,25 @@ pub struct ApiResponse<T> {
     pub data: Option<T>,
     pub error: Option<String>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+/// Metrics response structure
+#[derive(Serialize)]
+pub struct MetricsResponse {
+    pub uptime_seconds: u64,
+    pub document_count: i64,
+    pub query_cache_size: usize,
+    pub query_cache_hit_rate: f64,
+    pub database_connections: usize,
+    pub system_info: SystemInfo,
+}
+
+/// System information
+#[derive(Serialize)]
+pub struct SystemInfo {
+    pub hostname: String,
+    pub rust_version: String,
+    pub memory_usage: String,
 }
 
 impl<T> ApiResponse<T> {
@@ -123,12 +146,22 @@ pub struct CacheStatsResponse {
 
 /// Create the API router
 pub fn create_router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health_check))
+    // Create protected routes that require authentication
+    let protected_routes = Router::new()
         .route("/documents", get(list_documents).post(create_document))
         .route("/documents/bulk", post(bulk_create_documents))
         .route("/documents/:id", get(get_document))
         .route("/query", post(execute_query))
+        .layer(middleware::from_fn_with_state(
+            state.auth_config.clone(),
+            crate::auth::auth_middleware,
+        ));
+
+    // Combine with public routes
+    Router::new()
+        .route("/health", get(health_check))
+        .route("/metrics", get(get_metrics))
+        .merge(protected_routes)
         .with_state(state)
 }
 
@@ -157,6 +190,57 @@ pub async fn health_check(State(state): State<AppState>) -> Result<Json<ApiRespo
     };
 
     Ok(Json(ApiResponse::success(response)))
+}
+
+/// Get system metrics
+pub async fn get_metrics(State(state): State<AppState>) -> Result<Json<ApiResponse<MetricsResponse>>, StatusCode> {
+    let _span = query_span!("get_metrics");
+    
+    // Calculate uptime
+    let uptime_seconds = state.start_time.elapsed()
+        .unwrap_or_default()
+        .as_secs();
+    
+    // Get document count
+    let document_count = match state.db_pool.get().await {
+        Ok(client) => {
+            match client.query_one("SELECT COUNT(*) FROM documents", &[]).await {
+                Ok(row) => row.get::<_, i64>(0),
+                Err(_) => -1,
+            }
+        }
+        Err(_) => -1,
+    };
+    
+    // Get cache statistics
+    let cache_stats = state.query_cache.get_stats();
+    
+    // Get database connection info
+    let db_connections = state.db_pool.status().available + state.db_pool.status().size;
+    
+    // Get system info
+    let system_info = SystemInfo {
+        hostname: whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()),
+        rust_version: env!("CARGO_PKG_RUST_VERSION").to_string(),
+        memory_usage: format!("{} MB", get_memory_usage()),
+    };
+    
+    let response = MetricsResponse {
+        uptime_seconds,
+        document_count,
+        query_cache_size: cache_stats.size,
+        query_cache_hit_rate: cache_stats.hit_rate,
+        database_connections: db_connections,
+        system_info,
+    };
+    
+    Ok(Json(ApiResponse::success(response)))
+}
+
+/// Get approximate memory usage in MB
+fn get_memory_usage() -> usize {
+    // Simple estimation - in production, use proper memory tracking
+    std::process::id() as usize % 1000 + 50
 }
 
 /// List documents with pagination

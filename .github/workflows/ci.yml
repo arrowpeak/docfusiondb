@@ -67,6 +67,98 @@ jobs:
       run: cargo test --verbose
       env:
         DATABASE_URL: postgres://postgres:postgres@localhost:5432/docfusiondb_test
+    
+    - name: Run benchmarks
+      run: cargo bench --verbose
+      env:
+        DATABASE_URL: postgres://postgres:postgres@localhost:5432/docfusiondb_test
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: docfusiondb_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/cache
+          ~/.cargo/registry
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Set up test database
+      run: |
+        PGPASSWORD=postgres psql -h localhost -U postgres -d docfusiondb_test -c "
+        CREATE TABLE IF NOT EXISTS documents (
+            id SERIAL PRIMARY KEY,
+            doc JSONB NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_documents_gin ON documents USING GIN (doc);
+        "
+    
+    - name: Install Python dependencies
+      run: |
+        python3 -m pip install --upgrade pip
+        pip3 install aiohttp
+    
+    - name: Build DocFusionDB
+      run: cargo build --release
+      env:
+        DATABASE_URL: postgres://postgres:postgres@localhost:5432/docfusiondb_test
+    
+    - name: Start DocFusionDB server
+      run: |
+        export DATABASE_URL=postgres://postgres:postgres@localhost:5432/docfusiondb_test
+        export AUTH_ENABLED=true
+        export API_KEY=ci-test-key
+        ./target/release/docfusiondb serve &
+        sleep 5
+      env:
+        DATABASE_URL: postgres://postgres:postgres@localhost:5432/docfusiondb_test
+    
+    - name: Run HTTP API benchmarks
+      run: |
+        python3 scripts/benchmark.py --url http://localhost:8080 --api-key ci-test-key --requests 50 --concurrency 5
+    
+    - name: Test basic API functionality
+      run: |
+        # Test health endpoint
+        curl -f http://localhost:8080/health
+        
+        # Test metrics endpoint  
+        curl -f http://localhost:8080/metrics
+        
+        # Test document creation
+        curl -f -X POST http://localhost:8080/documents \
+          -H "Content-Type: application/json" \
+          -H "X-API-Key: ci-test-key" \
+          -d '{"document": {"title": "CI Test", "content": "Test document"}}'
+        
+        # Test document listing
+        curl -f http://localhost:8080/documents \
+          -H "X-API-Key: ci-test-key"
 
   build:
     name: Build

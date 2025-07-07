@@ -11,7 +11,9 @@ use docfusiondb::{
 use serde_json::Value as JsonValue;
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
+use std::fs;
+use std::io::Write;
 use tokio_postgres::NoTls;
 use deadpool_postgres::{Config as PoolConfig, Runtime};
 use tracing::{info, warn};
@@ -53,6 +55,21 @@ enum Commands {
         id: i32,
         /// The new JSON document
         json: String,
+    },
+    /// Backup documents to a JSON file
+    Backup {
+        /// Output file path
+        #[arg(short, long, default_value = "backup.json")]
+        output: String,
+    },
+    /// Restore documents from a JSON file
+    Restore {
+        /// Input file path
+        #[arg(short, long, default_value = "backup.json")]
+        input: String,
+        /// Clear existing documents before restore
+        #[arg(long)]
+        clear: bool,
     },
 }
 
@@ -121,6 +138,8 @@ async fn main() -> DocFusionResult<()> {
                 db_pool: pool.clone(),
                 df_context: Arc::new(df_ctx),
                 query_cache: docfusiondb::cache::QueryCache::default(),
+                auth_config: config.auth.clone(),
+                start_time: SystemTime::now(),
             };
             
             // Create router with middleware
@@ -184,6 +203,79 @@ async fn main() -> DocFusionResult<()> {
             log_performance!("document_update", duration, "rows_affected" => n);
             info!(document_id = id, rows_updated = n, "Document updated successfully");
             println!("Updated {} row(s)", n);
+        }
+        Commands::Backup { output } => {
+            info!("Starting backup to {}", output);
+            let _span = query_span!(&format!("backup_{}", output));
+            
+            let start = Instant::now();
+            let client = pool.get().await?;
+            
+            // Get all documents
+            let rows = client.query("SELECT id, doc FROM documents ORDER BY id", &[]).await?;
+            let mut documents = Vec::new();
+            
+            for row in rows {
+                let id: i32 = row.get(0);
+                let doc: JsonValue = row.get(1);
+                documents.push(serde_json::json!({
+                    "id": id,
+                    "document": doc
+                }));
+            }
+            
+            // Write to file
+            let backup_data = serde_json::json!({
+                "metadata": {
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "timestamp": chrono::Utc::now(),
+                    "document_count": documents.len()
+                },
+                "documents": documents
+            });
+            
+            let mut file = fs::File::create(&output)?;
+            file.write_all(serde_json::to_string_pretty(&backup_data)?.as_bytes())?;
+            
+            let duration = start.elapsed();
+            log_performance!("backup", duration, "document_count" => documents.len());
+            info!(file_path = output, document_count = documents.len(), "Backup completed successfully");
+            println!("Backed up {} documents to {}", documents.len(), output);
+        }
+        Commands::Restore { input, clear } => {
+            info!("Starting restore from {}", input);
+            let _span = query_span!(&format!("restore_{}", input));
+            
+            let start = Instant::now();
+            let client = pool.get().await?;
+            
+            // Read backup file
+            let file_content = fs::read_to_string(&input)?;
+            let backup_data: JsonValue = serde_json::from_str(&file_content)?;
+            
+            let documents = backup_data["documents"].as_array()
+                .ok_or_else(|| DocFusionError::internal("Invalid backup format: missing documents array".to_string()))?;
+            
+            // Clear existing data if requested
+            if clear {
+                info!("Clearing existing documents");
+                let clear_result = client.execute("DELETE FROM documents", &[]).await?;
+                info!(rows_deleted = clear_result, "Cleared existing documents");
+            }
+            
+            // Restore documents
+            let mut restored_count = 0;
+            for doc in documents {
+                let document = &doc["document"];
+                let insert_sql = "INSERT INTO documents (doc) VALUES ($1)";
+                client.execute(insert_sql, &[document]).await?;
+                restored_count += 1;
+            }
+            
+            let duration = start.elapsed();
+            log_performance!("restore", duration, "document_count" => restored_count);
+            info!(file_path = input, document_count = restored_count, cleared = clear, "Restore completed successfully");
+            println!("Restored {} documents from {}", restored_count, input);
         }
     }
 

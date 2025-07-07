@@ -17,7 +17,7 @@ fn bench_json_filters(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
     let ctx = rt.block_on(async {
-        let mut ctx = SessionContext::new();
+        let ctx = SessionContext::new();
         ctx.register_udf(create_udf(
             "json_extract_path",
             vec![DataType::Utf8, DataType::Utf8],
@@ -39,7 +39,8 @@ fn bench_json_filters(c: &mut Criterion) {
             datafusion::logical_expr_common::signature::Volatility::Immutable,
             Arc::new(json_multi_contains_udf),
         ));
-        let table = PostgresTable::new().await.unwrap();
+        let config = docfusiondb::config::Config::load().unwrap();
+        let table = PostgresTable::new(&config.database).await.unwrap();
         ctx.register_table("documents", Arc::new(table)).unwrap();
         ctx
     });
