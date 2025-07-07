@@ -47,10 +47,8 @@ fn bench_cache(c: &mut Criterion) {
     // Cache put operations
     group.bench_function("cache_put", |b| {
         b.iter(|| {
-            let key = format!(
-                "SELECT * FROM documents WHERE id = {}",
-                black_box(rand::random::<u32>() % 1000)
-            );
+            let rand_id = black_box(rand::random::<u32>() % 1000);
+            let key = format!("SELECT * FROM documents WHERE id = {rand_id}");
             let result = vec![{
                 let mut map = HashMap::new();
                 map.insert("id".to_string(), json!(1));
@@ -64,13 +62,13 @@ fn bench_cache(c: &mut Criterion) {
 
     // Cache get operations (populate first)
     for i in 0..50 {
-        let key = format!("cached_query_{}", i);
+        let key = format!("cached_query_{i}");
         let result = vec![{
             let mut map = HashMap::new();
             map.insert("id".to_string(), json!(i));
             map.insert(
                 "doc".to_string(),
-                json!({"title": format!("Cached Doc {}", i)}),
+                json!({"title": format!("Cached Doc {i}")}),
             );
             map
         }];
@@ -79,14 +77,16 @@ fn bench_cache(c: &mut Criterion) {
 
     group.bench_function("cache_get_hit", |b| {
         b.iter(|| {
-            let key = format!("cached_query_{}", black_box(rand::random::<usize>() % 50));
+            let rand_num = black_box(rand::random::<usize>() % 50);
+            let key = format!("cached_query_{rand_num}");
             black_box(cache.get(&key));
         });
     });
 
     group.bench_function("cache_get_miss", |b| {
         b.iter(|| {
-            let key = format!("missing_query_{}", black_box(rand::random::<u32>()));
+            let rand_num = black_box(rand::random::<u32>());
+            let key = format!("missing_query_{rand_num}");
             black_box(cache.get(&key));
         });
     });

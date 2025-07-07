@@ -154,12 +154,12 @@ async fn main() -> DocFusionResult<()> {
             let listener = tokio::net::TcpListener::bind(&bind_addr)
                 .await
                 .map_err(|e| {
-                    DocFusionError::internal(format!("Failed to bind to {}: {}", bind_addr, e))
+                    DocFusionError::internal(format!("Failed to bind to {bind_addr}: {e}"))
                 })?;
 
             serve(listener, app)
                 .await
-                .map_err(|e| DocFusionError::internal(format!("Server error: {}", e)))?;
+                .map_err(|e| DocFusionError::internal(format!("Server error: {e}")))?;
         }
         Commands::Query { sql } => {
             let _span = query_span!(&sql);
@@ -172,14 +172,14 @@ async fn main() -> DocFusionResult<()> {
             let duration = start.elapsed();
 
             log_performance!("query_execution", duration, "rows_returned" => rows);
-            println!("Rows returned: {}", rows);
-            println!("Time taken: {:?}", duration);
+            println!("Rows returned: {rows}");
+            println!("Time taken: {duration:?}");
         }
         Commands::Insert { json } => {
             info!("Inserting document");
             // Parse the JSON string into a serde_json::Value
             let json_value: JsonValue = serde_json::from_str(&json)
-                .map_err(|e| DocFusionError::invalid_document(format!("Invalid JSON: {}", e)))?;
+                .map_err(|e| DocFusionError::invalid_document(format!("Invalid JSON: {e}")))?;
 
             let start = Instant::now();
             let stmt = "INSERT INTO documents (doc) VALUES ($1::jsonb)";
@@ -188,12 +188,12 @@ async fn main() -> DocFusionResult<()> {
 
             log_performance!("document_insert", duration, "rows_affected" => n);
             info!(rows_inserted = n, "Document inserted successfully");
-            println!("Inserted {} row(s)", n);
+            println!("Inserted {n} row(s)");
         }
         Commands::Update { id, json } => {
             info!(document_id = id, "Updating document");
             let json_value: JsonValue = serde_json::from_str(&json)
-                .map_err(|e| DocFusionError::invalid_document(format!("Invalid JSON: {}", e)))?;
+                .map_err(|e| DocFusionError::invalid_document(format!("Invalid JSON: {e}")))?;
 
             let start = Instant::now();
             let stmt = "UPDATE documents SET doc = $1::jsonb WHERE id = $2";
@@ -211,11 +211,11 @@ async fn main() -> DocFusionResult<()> {
                 rows_updated = n,
                 "Document updated successfully"
             );
-            println!("Updated {} row(s)", n);
+            println!("Updated {n} row(s)");
         }
         Commands::Backup { output } => {
             info!("Starting backup to {}", output);
-            let _span = query_span!(&format!("backup_{}", output));
+            let _span = query_span!(&format!("backup_{output}"));
 
             let start = Instant::now();
             let client = pool.get().await?;
@@ -255,11 +255,11 @@ async fn main() -> DocFusionResult<()> {
                 document_count = documents.len(),
                 "Backup completed successfully"
             );
-            println!("Backed up {} documents to {}", documents.len(), output);
+            println!("Backed up {} documents to {output}", documents.len());
         }
         Commands::Restore { input, clear } => {
             info!("Starting restore from {}", input);
-            let _span = query_span!(&format!("restore_{}", input));
+            let _span = query_span!(&format!("restore_{input}"));
 
             let start = Instant::now();
             let client = pool.get().await?;
@@ -298,7 +298,7 @@ async fn main() -> DocFusionResult<()> {
                 cleared = clear,
                 "Restore completed successfully"
             );
-            println!("Restored {} documents from {}", restored_count, input);
+            println!("Restored {restored_count} documents from {input}");
         }
     }
 
