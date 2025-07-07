@@ -128,7 +128,15 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_config_from_env() {
-        // Set environment variables
+        // Store original values to restore later
+        let original_host = env::var("DB_HOST").ok();
+        let original_port = env::var("DB_PORT").ok();
+        let original_user = env::var("DB_USER").ok();
+        let original_password = env::var("DB_PASSWORD").ok();
+        let original_name = env::var("DB_NAME").ok();
+        let original_server_port = env::var("SERVER_PORT").ok();
+        
+        // Set environment variables for test
         unsafe {
             env::set_var("DB_HOST", "testhost");
             env::set_var("DB_PORT", "5433");
@@ -147,19 +155,40 @@ mod integration_tests {
         assert_eq!(config.database.database, "testdb");
         assert_eq!(config.server.port, 9090);
 
-        // Clean up
+        // Restore original values or remove if they didn't exist
         unsafe {
-            env::remove_var("DB_HOST");
-            env::remove_var("DB_PORT");
-            env::remove_var("DB_USER");
-            env::remove_var("DB_PASSWORD");
-            env::remove_var("DB_NAME");
-            env::remove_var("SERVER_PORT");
+            match original_host {
+                Some(val) => env::set_var("DB_HOST", val),
+                None => env::remove_var("DB_HOST"),
+            }
+            match original_port {
+                Some(val) => env::set_var("DB_PORT", val),
+                None => env::remove_var("DB_PORT"),
+            }
+            match original_user {
+                Some(val) => env::set_var("DB_USER", val),
+                None => env::remove_var("DB_USER"),
+            }
+            match original_password {
+                Some(val) => env::set_var("DB_PASSWORD", val),
+                None => env::remove_var("DB_PASSWORD"),
+            }
+            match original_name {
+                Some(val) => env::set_var("DB_NAME", val),
+                None => env::remove_var("DB_NAME"),
+            }
+            match original_server_port {
+                Some(val) => env::set_var("SERVER_PORT", val),
+                None => env::remove_var("SERVER_PORT"),
+            }
         }
     }
 
     #[tokio::test]
     async fn test_config_from_database_url() {
+        // Store original value to restore later
+        let original_database_url = env::var("DATABASE_URL").ok();
+        
         unsafe {
             env::set_var("DATABASE_URL", "postgres://user:pass@localhost:5433/testdb");
         }
@@ -172,8 +201,12 @@ mod integration_tests {
         assert_eq!(config.database.password, "pass");
         assert_eq!(config.database.database, "testdb");
 
+        // Restore original value or remove if it didn't exist
         unsafe {
-            env::remove_var("DATABASE_URL");
+            match original_database_url {
+                Some(val) => env::set_var("DATABASE_URL", val),
+                None => env::remove_var("DATABASE_URL"),
+            }
         }
     }
 }
