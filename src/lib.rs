@@ -1,23 +1,23 @@
 use async_trait::async_trait;
+use deadpool_postgres::{Config as PoolConfig, Pool, Runtime};
 use futures::stream;
 use log::debug;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio_postgres::NoTls;
-use deadpool_postgres::{Config as PoolConfig, Pool, Runtime};
 
-pub mod error;
-pub mod config;
-pub mod logging;
 pub mod api;
 pub mod auth;
 pub mod cache;
+pub mod config;
+pub mod error;
+pub mod logging;
 
 #[cfg(test)]
 mod tests;
 
-pub use error::{DocFusionError, DocFusionResult};
 pub use config::Config;
+pub use error::{DocFusionError, DocFusionResult};
 
 use datafusion::arrow::array::{
     Array, ArrayRef, BooleanBuilder, Int32Builder, StringArray, StringBuilder,
@@ -275,15 +275,15 @@ impl PostgresTable {
         cfg.password = Some(config.password.clone());
         cfg.dbname = Some(config.database.clone());
         cfg.pool = Some(deadpool_postgres::PoolConfig::new(config.max_connections));
-        
+
         let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls)?;
-        
+
         // Test the connection
         let _conn = pool.get().await?;
-        
+
         Ok(Self { pool })
     }
-    
+
     /// Create a new PostgresTable from a connection pool.
     pub fn from_pool(pool: Pool) -> Self {
         Self { pool }
@@ -401,11 +401,11 @@ impl TableProvider for PostgresTable {
         let where_clause = filters_to_sql(filters).unwrap_or_default();
         let q = format!("SELECT id, doc::text FROM documents{}", where_clause);
         debug!("Executing SQL: {}", q);
-        
+
         let client = self.pool.get().await.map_err(|e| {
             DataFusionError::Execution(format!("Failed to get connection from pool: {}", e))
         })?;
-        
+
         let rows = client
             .query(&q, &[])
             .await

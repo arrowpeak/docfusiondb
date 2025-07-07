@@ -19,7 +19,7 @@ pub async fn auth_middleware(
     if !auth_config.enabled {
         return Ok(next.run(request).await);
     }
-    
+
     // Check for API key in headers
     let api_key = headers
         .get("X-API-Key")
@@ -31,7 +31,7 @@ pub async fn auth_middleware(
                 .and_then(|value| value.to_str().ok())
                 .and_then(|auth| auth.strip_prefix("Bearer "))
         });
-    
+
     match (api_key, &auth_config.api_key) {
         (Some(provided_key), Some(expected_key)) if provided_key == expected_key => {
             Ok(next.run(request).await)

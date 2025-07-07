@@ -4,20 +4,21 @@ use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::create_udf;
 use datafusion::logical_expr_common::signature::Volatility;
 use docfusiondb::{
-    PostgresTable, json_contains_udf, json_extract_path_udf, json_multi_contains_udf,
-    Config, DocFusionResult, DocFusionError, logging, query_span, log_performance,
-    api::{create_router, AppState},
+    Config, DocFusionError, DocFusionResult, PostgresTable,
+    api::{AppState, create_router},
+    json_contains_udf, json_extract_path_udf, json_multi_contains_udf, log_performance, logging,
+    query_span,
 };
 use serde_json::Value as JsonValue;
 
-use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use axum::serve;
+use deadpool_postgres::{Config as PoolConfig, Runtime};
 use std::fs;
 use std::io::Write;
+use std::sync::Arc;
+use std::time::{Instant, SystemTime};
 use tokio_postgres::NoTls;
-use deadpool_postgres::{Config as PoolConfig, Runtime};
 use tracing::{info, warn};
-use axum::serve;
 
 /// DocFusionDB CLI
 #[derive(Parser)]
@@ -77,10 +78,10 @@ enum Commands {
 async fn main() -> DocFusionResult<()> {
     // Load configuration first (needed for logging setup)
     let config = Config::load()?;
-    
+
     // Initialize structured logging
     logging::init_logging(&config.logging)?;
-    
+
     info!("Starting DocFusionDB CLI");
     info!(?config, "Loaded configuration");
 
@@ -123,7 +124,7 @@ async fn main() -> DocFusionResult<()> {
     match cli.command {
         Commands::Serve { port, host } => {
             info!("Starting HTTP API server");
-            
+
             // Override config with CLI args if provided
             let mut server_config = config.server.clone();
             if let Some(port) = port {
@@ -132,7 +133,7 @@ async fn main() -> DocFusionResult<()> {
             if let Some(host) = host {
                 server_config.host = host;
             }
-            
+
             // Create app state with cache
             let app_state = AppState {
                 db_pool: pool.clone(),
@@ -141,31 +142,35 @@ async fn main() -> DocFusionResult<()> {
                 auth_config: config.auth.clone(),
                 start_time: SystemTime::now(),
             };
-            
+
             // Create router with middleware
             let app = create_router(app_state)
                 .layer(tower_http::trace::TraceLayer::new_for_http())
                 .layer(tower_http::cors::CorsLayer::permissive());
-            
+
             let bind_addr = format!("{}:{}", server_config.host, server_config.port);
             info!("Server listening on {}", bind_addr);
-            
-            let listener = tokio::net::TcpListener::bind(&bind_addr).await
-                .map_err(|e| DocFusionError::internal(format!("Failed to bind to {}: {}", bind_addr, e)))?;
-            
-            serve(listener, app).await
+
+            let listener = tokio::net::TcpListener::bind(&bind_addr)
+                .await
+                .map_err(|e| {
+                    DocFusionError::internal(format!("Failed to bind to {}: {}", bind_addr, e))
+                })?;
+
+            serve(listener, app)
+                .await
                 .map_err(|e| DocFusionError::internal(format!("Server error: {}", e)))?;
         }
         Commands::Query { sql } => {
             let _span = query_span!(&sql);
             info!("Executing query");
-            
+
             let start = Instant::now();
             let df = df_ctx.sql(&sql).await?;
             let batches = df.collect().await?;
             let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
             let duration = start.elapsed();
-            
+
             log_performance!("query_execution", duration, "rows_returned" => rows);
             println!("Rows returned: {}", rows);
             println!("Time taken: {:?}", duration);
@@ -175,12 +180,12 @@ async fn main() -> DocFusionResult<()> {
             // Parse the JSON string into a serde_json::Value
             let json_value: JsonValue = serde_json::from_str(&json)
                 .map_err(|e| DocFusionError::invalid_document(format!("Invalid JSON: {}", e)))?;
-            
+
             let start = Instant::now();
             let stmt = "INSERT INTO documents (doc) VALUES ($1::jsonb)";
             let n = pg_client.execute(stmt, &[&json_value]).await?;
             let duration = start.elapsed();
-            
+
             log_performance!("document_insert", duration, "rows_affected" => n);
             info!(rows_inserted = n, "Document inserted successfully");
             println!("Inserted {} row(s)", n);
@@ -189,32 +194,38 @@ async fn main() -> DocFusionResult<()> {
             info!(document_id = id, "Updating document");
             let json_value: JsonValue = serde_json::from_str(&json)
                 .map_err(|e| DocFusionError::invalid_document(format!("Invalid JSON: {}", e)))?;
-            
+
             let start = Instant::now();
             let stmt = "UPDATE documents SET doc = $1::jsonb WHERE id = $2";
             let n = pg_client.execute(stmt, &[&json_value, &id]).await?;
             let duration = start.elapsed();
-            
+
             if n == 0 {
                 warn!(document_id = id, "Document not found for update");
                 return Err(DocFusionError::document_not_found(id));
             }
-            
+
             log_performance!("document_update", duration, "rows_affected" => n);
-            info!(document_id = id, rows_updated = n, "Document updated successfully");
+            info!(
+                document_id = id,
+                rows_updated = n,
+                "Document updated successfully"
+            );
             println!("Updated {} row(s)", n);
         }
         Commands::Backup { output } => {
             info!("Starting backup to {}", output);
             let _span = query_span!(&format!("backup_{}", output));
-            
+
             let start = Instant::now();
             let client = pool.get().await?;
-            
+
             // Get all documents
-            let rows = client.query("SELECT id, doc FROM documents ORDER BY id", &[]).await?;
+            let rows = client
+                .query("SELECT id, doc FROM documents ORDER BY id", &[])
+                .await?;
             let mut documents = Vec::new();
-            
+
             for row in rows {
                 let id: i32 = row.get(0);
                 let doc: JsonValue = row.get(1);
@@ -223,7 +234,7 @@ async fn main() -> DocFusionResult<()> {
                     "document": doc
                 }));
             }
-            
+
             // Write to file
             let backup_data = serde_json::json!({
                 "metadata": {
@@ -233,36 +244,43 @@ async fn main() -> DocFusionResult<()> {
                 },
                 "documents": documents
             });
-            
+
             let mut file = fs::File::create(&output)?;
             file.write_all(serde_json::to_string_pretty(&backup_data)?.as_bytes())?;
-            
+
             let duration = start.elapsed();
             log_performance!("backup", duration, "document_count" => documents.len());
-            info!(file_path = output, document_count = documents.len(), "Backup completed successfully");
+            info!(
+                file_path = output,
+                document_count = documents.len(),
+                "Backup completed successfully"
+            );
             println!("Backed up {} documents to {}", documents.len(), output);
         }
         Commands::Restore { input, clear } => {
             info!("Starting restore from {}", input);
             let _span = query_span!(&format!("restore_{}", input));
-            
+
             let start = Instant::now();
             let client = pool.get().await?;
-            
+
             // Read backup file
             let file_content = fs::read_to_string(&input)?;
             let backup_data: JsonValue = serde_json::from_str(&file_content)?;
-            
-            let documents = backup_data["documents"].as_array()
-                .ok_or_else(|| DocFusionError::internal("Invalid backup format: missing documents array".to_string()))?;
-            
+
+            let documents = backup_data["documents"].as_array().ok_or_else(|| {
+                DocFusionError::internal(
+                    "Invalid backup format: missing documents array".to_string(),
+                )
+            })?;
+
             // Clear existing data if requested
             if clear {
                 info!("Clearing existing documents");
                 let clear_result = client.execute("DELETE FROM documents", &[]).await?;
                 info!(rows_deleted = clear_result, "Cleared existing documents");
             }
-            
+
             // Restore documents
             let mut restored_count = 0;
             for doc in documents {
@@ -271,10 +289,15 @@ async fn main() -> DocFusionResult<()> {
                 client.execute(insert_sql, &[document]).await?;
                 restored_count += 1;
             }
-            
+
             let duration = start.elapsed();
             log_performance!("restore", duration, "document_count" => restored_count);
-            info!(file_path = input, document_count = restored_count, cleared = clear, "Restore completed successfully");
+            info!(
+                file_path = input,
+                document_count = restored_count,
+                cleared = clear,
+                "Restore completed successfully"
+            );
             println!("Restored {} documents from {}", restored_count, input);
         }
     }

@@ -43,7 +43,7 @@ impl DatabaseConfig {
             self.host, self.port, self.user, self.password, self.database
         )
     }
-    
+
     /// Create configuration from environment variables
     pub fn from_env() -> DocFusionResult<Self> {
         if let Ok(url) = env::var("DATABASE_URL") {
@@ -77,39 +77,46 @@ impl DatabaseConfig {
             })
         }
     }
-    
+
     /// Parse a PostgreSQL URL into configuration
     pub fn from_url(url: &str) -> DocFusionResult<Self> {
         // Simple URL parsing - in production, consider using a proper URL parser
         if !url.starts_with("postgres://") && !url.starts_with("postgresql://") {
             return Err(DocFusionError::config("Invalid PostgreSQL URL format"));
         }
-        
-        let url = url.strip_prefix("postgres://").or_else(|| url.strip_prefix("postgresql://")).unwrap();
+
+        let url = url
+            .strip_prefix("postgres://")
+            .or_else(|| url.strip_prefix("postgresql://"))
+            .unwrap();
         let parts: Vec<&str> = url.split('@').collect();
-        
+
         if parts.len() != 2 {
             return Err(DocFusionError::config("Invalid PostgreSQL URL format"));
         }
-        
+
         let credentials: Vec<&str> = parts[0].split(':').collect();
         if credentials.len() != 2 {
             return Err(DocFusionError::config("Invalid PostgreSQL URL credentials"));
         }
-        
+
         let host_db: Vec<&str> = parts[1].split('/').collect();
         if host_db.len() != 2 {
-            return Err(DocFusionError::config("Invalid PostgreSQL URL host/database"));
+            return Err(DocFusionError::config(
+                "Invalid PostgreSQL URL host/database",
+            ));
         }
-        
+
         let host_port: Vec<&str> = host_db[0].split(':').collect();
         let host = host_port[0].to_string();
         let port = if host_port.len() > 1 {
-            host_port[1].parse().map_err(|_| DocFusionError::config("Invalid port in URL"))?
+            host_port[1]
+                .parse()
+                .map_err(|_| DocFusionError::config("Invalid port in URL"))?
         } else {
             5432
         };
-        
+
         Ok(Self {
             host,
             port,
@@ -130,7 +137,7 @@ pub struct ServerConfig {
 }
 
 /// Authentication configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AuthConfig {
     pub enabled: bool,
     pub api_key: Option<String>,
@@ -142,15 +149,6 @@ impl Default for ServerConfig {
             host: "0.0.0.0".to_string(),
             port: 8080,
             workers: num_cpus::get(),
-        }
-    }
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            api_key: None,
         }
     }
 }
@@ -174,23 +172,12 @@ impl Default for LogConfig {
 }
 
 /// Main application configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     pub database: DatabaseConfig,
     pub server: ServerConfig,
     pub logging: LogConfig,
     pub auth: AuthConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            database: DatabaseConfig::default(),
-            server: ServerConfig::default(),
-            logging: LogConfig::default(),
-            auth: AuthConfig::default(),
-        }
-    }
 }
 
 impl Config {
@@ -200,7 +187,7 @@ impl Config {
         let config: Config = serde_yaml::from_str(&contents)?;
         Ok(config)
     }
-    
+
     /// Load configuration from environment variables
     pub fn from_env() -> DocFusionResult<Self> {
         Ok(Self {
@@ -230,18 +217,18 @@ impl Config {
             },
         })
     }
-    
+
     /// Load configuration with fallback order: file -> env -> defaults
     pub fn load() -> DocFusionResult<Self> {
         // Try to load from config file first
         if let Ok(config) = Self::from_file("config.yaml") {
             return Ok(config);
         }
-        
+
         // Fall back to environment variables
         Self::from_env()
     }
-    
+
     /// Save configuration to file
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> DocFusionResult<()> {
         let contents = serde_yaml::to_string(self)?;

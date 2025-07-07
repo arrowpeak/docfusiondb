@@ -1,10 +1,10 @@
 use axum::{
+    Router,
     extract::{Path, Query, State},
     http::StatusCode,
     middleware,
     response::Json,
     routing::{get, post},
-    Router,
 };
 use datafusion::execution::context::SessionContext;
 use deadpool_postgres::Pool;
@@ -13,9 +13,9 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
-use crate::{DocFusionError, query_span, log_performance};
+use crate::{DocFusionError, log_performance, query_span};
 
 /// Application state shared across handlers
 #[derive(Clone)]
@@ -86,8 +86,6 @@ pub struct CreateDocumentRequest {
 pub struct BulkCreateRequest {
     pub documents: Vec<JsonValue>,
 }
-
-
 
 /// Document response
 #[derive(Serialize)]
@@ -166,7 +164,9 @@ pub fn create_router(state: AppState) -> Router {
 }
 
 /// Health check endpoint
-pub async fn health_check(State(state): State<AppState>) -> Result<Json<ApiResponse<HealthResponse>>, StatusCode> {
+pub async fn health_check(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<HealthResponse>>, StatusCode> {
     // Test database connection
     let db_status = match state.db_pool.get().await {
         Ok(_) => "connected",
@@ -193,38 +193,41 @@ pub async fn health_check(State(state): State<AppState>) -> Result<Json<ApiRespo
 }
 
 /// Get system metrics
-pub async fn get_metrics(State(state): State<AppState>) -> Result<Json<ApiResponse<MetricsResponse>>, StatusCode> {
+pub async fn get_metrics(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<MetricsResponse>>, StatusCode> {
     let _span = query_span!("get_metrics");
-    
+
     // Calculate uptime
-    let uptime_seconds = state.start_time.elapsed()
-        .unwrap_or_default()
-        .as_secs();
-    
+    let uptime_seconds = state.start_time.elapsed().unwrap_or_default().as_secs();
+
     // Get document count
     let document_count = match state.db_pool.get().await {
         Ok(client) => {
-            match client.query_one("SELECT COUNT(*) FROM documents", &[]).await {
+            match client
+                .query_one("SELECT COUNT(*) FROM documents", &[])
+                .await
+            {
                 Ok(row) => row.get::<_, i64>(0),
                 Err(_) => -1,
             }
         }
         Err(_) => -1,
     };
-    
+
     // Get cache statistics
     let cache_stats = state.query_cache.get_stats();
-    
+
     // Get database connection info
     let db_connections = state.db_pool.status().available + state.db_pool.status().size;
-    
+
     // Get system info
     let system_info = SystemInfo {
         hostname: whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()),
         rust_version: env!("CARGO_PKG_RUST_VERSION").to_string(),
         memory_usage: format!("{} MB", get_memory_usage()),
     };
-    
+
     let response = MetricsResponse {
         uptime_seconds,
         document_count,
@@ -233,7 +236,7 @@ pub async fn get_metrics(State(state): State<AppState>) -> Result<Json<ApiRespon
         database_connections: db_connections,
         system_info,
     };
-    
+
     Ok(Json(ApiResponse::success(response)))
 }
 
@@ -249,28 +252,26 @@ pub async fn list_documents(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<DocumentResponse>>>, StatusCode> {
     let start = std::time::Instant::now();
-    
+
     let limit = params.limit.unwrap_or(10).min(100); // Max 100 items per request
     let offset = params.offset.unwrap_or(0);
-    
+
     info!(limit = limit, offset = offset, "Listing documents");
 
-    let client = state.db_pool.get().await
-        .map_err(|e| {
-            error!("Failed to get database connection: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let client = state.db_pool.get().await.map_err(|e| {
+        error!("Failed to get database connection: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let query = format!(
         "SELECT id, doc as document FROM documents ORDER BY id LIMIT {} OFFSET {}",
         limit, offset
     );
 
-    let rows = client.query(&query, &[]).await
-        .map_err(|e| {
-            error!("Database query failed: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let rows = client.query(&query, &[]).await.map_err(|e| {
+        error!("Database query failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let documents: Vec<DocumentResponse> = rows
         .into_iter()
@@ -292,23 +293,24 @@ pub async fn get_document(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<DocumentResponse>>, StatusCode> {
     let start = std::time::Instant::now();
-    
+
     info!(document_id = id, "Getting document");
 
-    let client = state.db_pool.get().await
-        .map_err(|e| {
-            error!("Failed to get database connection: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    let rows = client.query(
-        "SELECT id, doc as document FROM documents WHERE id = $1",
-        &[&id],
-    ).await
-    .map_err(|e| {
-        error!("Database query failed: {}", e);
+    let client = state.db_pool.get().await.map_err(|e| {
+        error!("Failed to get database connection: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    let rows = client
+        .query(
+            "SELECT id, doc as document FROM documents WHERE id = $1",
+            &[&id],
+        )
+        .await
+        .map_err(|e| {
+            error!("Database query failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     if rows.is_empty() {
         warn!(document_id = id, "Document not found");
@@ -333,28 +335,29 @@ pub async fn create_document(
     Json(request): Json<CreateDocumentRequest>,
 ) -> Result<Json<ApiResponse<DocumentResponse>>, StatusCode> {
     let start = std::time::Instant::now();
-    
+
     // Basic validation
     if !request.document.is_object() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    
+
     info!("Creating new document");
 
-    let client = state.db_pool.get().await
-        .map_err(|e| {
-            error!("Failed to get database connection: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    let row = client.query_one(
-        "INSERT INTO documents (doc) VALUES ($1::jsonb) RETURNING id, doc as document",
-        &[&request.document],
-    ).await
-    .map_err(|e| {
-        error!("Failed to insert document: {}", e);
+    let client = state.db_pool.get().await.map_err(|e| {
+        error!("Failed to get database connection: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    let row = client
+        .query_one(
+            "INSERT INTO documents (doc) VALUES ($1::jsonb) RETURNING id, doc as document",
+            &[&request.document],
+        )
+        .await
+        .map_err(|e| {
+            error!("Failed to insert document: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     let document = DocumentResponse {
         id: row.get(0),
@@ -374,50 +377,51 @@ pub async fn bulk_create_documents(
     Json(request): Json<BulkCreateRequest>,
 ) -> Result<Json<ApiResponse<BulkResponse>>, StatusCode> {
     let start = std::time::Instant::now();
-    
+
     if request.documents.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    
+
     if request.documents.len() > 1000 {
         // Prevent excessive bulk operations
         return Err(StatusCode::BAD_REQUEST);
     }
-    
+
     // Basic validation - all documents must be objects
     for doc in &request.documents {
         if !doc.is_object() {
             return Err(StatusCode::BAD_REQUEST);
         }
     }
-    
-    info!(document_count = request.documents.len(), "Bulk creating documents");
 
-    let client = state.db_pool.get().await
-        .map_err(|e| {
-            error!("Failed to get database connection: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    info!(
+        document_count = request.documents.len(),
+        "Bulk creating documents"
+    );
+
+    let client = state.db_pool.get().await.map_err(|e| {
+        error!("Failed to get database connection: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     // Build bulk insert query
     let mut values = Vec::new();
     let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
-    
+
     for (i, doc) in request.documents.iter().enumerate() {
         values.push(format!("(${}::jsonb)", i + 1));
         params.push(doc);
     }
-    
+
     let query = format!(
         "INSERT INTO documents (doc) VALUES {} RETURNING id",
         values.join(", ")
     );
 
-    let rows = client.query(&query, &params).await
-        .map_err(|e| {
-            error!("Failed to bulk insert documents: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let rows = client.query(&query, &params).await.map_err(|e| {
+        error!("Failed to bulk insert documents: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let inserted_count = rows.len();
     let first_id = rows.first().map(|row| row.get::<_, i32>(0));
@@ -425,7 +429,10 @@ pub async fn bulk_create_documents(
 
     let duration = start.elapsed();
     log_performance!("bulk_create_documents", duration, "count" => inserted_count);
-    info!(count = inserted_count, "Documents bulk created successfully");
+    info!(
+        count = inserted_count,
+        "Documents bulk created successfully"
+    );
 
     let response = BulkResponse {
         inserted_count,
@@ -444,7 +451,7 @@ pub async fn execute_query(
 ) -> Result<Json<ApiResponse<QueryResponse>>, StatusCode> {
     let _span = query_span!(&request.sql);
     let start = std::time::Instant::now();
-    
+
     info!("Executing custom query");
 
     // Check cache first
@@ -452,29 +459,27 @@ pub async fn execute_query(
     if let Some(cached_rows) = state.query_cache.get(&cache_key) {
         let duration = start.elapsed();
         info!("Query served from cache");
-        
+
         let row_count = cached_rows.len();
         let response = QueryResponse {
             rows: cached_rows,
             row_count,
             execution_time_ms: duration.as_millis(),
         };
-        
+
         return Ok(Json(ApiResponse::success(response)));
     }
 
     // Execute query through DataFusion
-    let df = state.df_context.sql(&request.sql).await
-        .map_err(|e| {
-            error!("DataFusion query failed: {}", e);
-            StatusCode::BAD_REQUEST
-        })?;
+    let df = state.df_context.sql(&request.sql).await.map_err(|e| {
+        error!("DataFusion query failed: {}", e);
+        StatusCode::BAD_REQUEST
+    })?;
 
-    let batches = df.collect().await
-        .map_err(|e| {
-            error!("Failed to collect query results: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let batches = df.collect().await.map_err(|e| {
+        error!("Failed to collect query results: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     // Convert Arrow batches to JSON
     let mut rows = Vec::new();
@@ -483,10 +488,10 @@ pub async fn execute_query(
     for batch in batches {
         total_rows += batch.num_rows();
         let schema = batch.schema();
-        
+
         for row_idx in 0..batch.num_rows() {
             let mut row_map = HashMap::new();
-            
+
             for (col_idx, field) in schema.fields().iter().enumerate() {
                 let column = batch.column(col_idx);
                 let value = if column.is_null(row_idx) {
@@ -495,20 +500,26 @@ pub async fn execute_query(
                     // Simplified conversion - in production, handle more types
                     match column.data_type() {
                         datafusion::arrow::datatypes::DataType::Int32 => {
-                            let array = column.as_any().downcast_ref::<datafusion::arrow::array::Int32Array>().unwrap();
+                            let array = column
+                                .as_any()
+                                .downcast_ref::<datafusion::arrow::array::Int32Array>()
+                                .unwrap();
                             JsonValue::Number(serde_json::Number::from(array.value(row_idx)))
                         }
                         datafusion::arrow::datatypes::DataType::Utf8 => {
-                            let array = column.as_any().downcast_ref::<datafusion::arrow::array::StringArray>().unwrap();
+                            let array = column
+                                .as_any()
+                                .downcast_ref::<datafusion::arrow::array::StringArray>()
+                                .unwrap();
                             JsonValue::String(array.value(row_idx).to_string())
                         }
                         _ => JsonValue::String("unsupported_type".to_string()),
                     }
                 };
-                
+
                 row_map.insert(field.name().clone(), value);
             }
-            
+
             rows.push(row_map);
         }
     }

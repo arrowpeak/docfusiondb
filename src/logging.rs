@@ -1,6 +1,6 @@
 use crate::config::LogConfig;
 use crate::error::{DocFusionError, DocFusionResult};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Initialize structured logging based on configuration
 pub fn init_logging(config: &LogConfig) -> DocFusionResult<()> {
@@ -17,14 +17,10 @@ pub fn init_logging(config: &LogConfig) -> DocFusionResult<()> {
                     .create(true)
                     .append(true)
                     .open(file_path)?;
-                
-                registry
-                    .with(fmt::layer().json().with_writer(file))
-                    .init();
+
+                registry.with(fmt::layer().json().with_writer(file)).init();
             } else {
-                registry
-                    .with(fmt::layer().json())
-                    .init();
+                registry.with(fmt::layer().json()).init();
             }
         }
         "pretty" => {
@@ -33,14 +29,12 @@ pub fn init_logging(config: &LogConfig) -> DocFusionResult<()> {
                     .create(true)
                     .append(true)
                     .open(file_path)?;
-                
+
                 registry
                     .with(fmt::layer().pretty().with_writer(file))
                     .init();
             } else {
-                registry
-                    .with(fmt::layer().pretty())
-                    .init();
+                registry.with(fmt::layer().pretty()).init();
             }
         }
         "compact" => {
@@ -49,14 +43,12 @@ pub fn init_logging(config: &LogConfig) -> DocFusionResult<()> {
                     .create(true)
                     .append(true)
                     .open(file_path)?;
-                
+
                 registry
                     .with(fmt::layer().compact().with_writer(file))
                     .init();
             } else {
-                registry
-                    .with(fmt::layer().compact())
-                    .init();
+                registry.with(fmt::layer().compact()).init();
             }
         }
         _ => {
@@ -66,14 +58,10 @@ pub fn init_logging(config: &LogConfig) -> DocFusionResult<()> {
                     .create(true)
                     .append(true)
                     .open(file_path)?;
-                
-                registry
-                    .with(fmt::layer().with_writer(file))
-                    .init();
+
+                registry.with(fmt::layer().with_writer(file)).init();
             } else {
-                registry
-                    .with(fmt::layer())
-                    .init();
+                registry.with(fmt::layer()).init();
             }
         }
     }
