@@ -129,6 +129,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_config_from_env() {
         // Store original values to restore later
+        let original_database_url = env::var("DATABASE_URL").ok();
         let original_host = env::var("DB_HOST").ok();
         let original_port = env::var("DB_PORT").ok();
         let original_user = env::var("DB_USER").ok();
@@ -136,8 +137,9 @@ mod integration_tests {
         let original_name = env::var("DB_NAME").ok();
         let original_server_port = env::var("SERVER_PORT").ok();
 
-        // Set environment variables for test
+        // Remove DATABASE_URL to ensure individual env vars are used
         unsafe {
+            env::remove_var("DATABASE_URL");
             env::set_var("DB_HOST", "testhost");
             env::set_var("DB_PORT", "5433");
             env::set_var("DB_USER", "testuser");
@@ -157,6 +159,10 @@ mod integration_tests {
 
         // Restore original values or remove if they didn't exist
         unsafe {
+            match original_database_url {
+                Some(val) => env::set_var("DATABASE_URL", val),
+                None => env::remove_var("DATABASE_URL"),
+            }
             match original_host {
                 Some(val) => env::set_var("DB_HOST", val),
                 None => env::remove_var("DB_HOST"),
