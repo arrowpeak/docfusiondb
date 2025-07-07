@@ -135,7 +135,7 @@ mod integration_tests {
         let original_password = env::var("DB_PASSWORD").ok();
         let original_name = env::var("DB_NAME").ok();
         let original_server_port = env::var("SERVER_PORT").ok();
-        
+
         // Set environment variables for test
         unsafe {
             env::set_var("DB_HOST", "testhost");
@@ -188,7 +188,7 @@ mod integration_tests {
     async fn test_config_from_database_url() {
         // Store original value to restore later
         let original_database_url = env::var("DATABASE_URL").ok();
-        
+
         unsafe {
             env::set_var("DATABASE_URL", "postgres://user:pass@localhost:5433/testdb");
         }
